@@ -1,0 +1,4 @@
+<map id="dnnl::shuffle_backward" name="dnnl::shuffle_backward">
+<area shape="rect" id="node2" href="$classdnnl_1_1primitive.html" title="Base class for all computational primitives. " alt="" coords="31,96,133,123"/>
+<area shape="rect" id="node3" href="$classdnnl_1_1handle.html" title="dnnl::handle\&lt; dnnl\l_primitive_t \&gt;" alt="" coords="19,6,147,47"/>
+</map>
