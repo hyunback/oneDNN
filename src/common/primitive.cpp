@@ -148,8 +148,11 @@ status_t dnnl_primitive_desc_destroy(
 
 status_t dnnl_primitive_create(primitive_iface_t **primitive_iface,
         const primitive_desc_iface_t *primitive_desc_iface) {
-    if (utils::any_null(primitive_iface, primitive_desc_iface))
+    if (utils::any_null(primitive_iface, primitive_desc_iface)) {
+        printf("hb primitive_iface, primitive_desc_iface invalid_arguments\n");
         return invalid_arguments;
+    }
+
     return dnnl::impl::primitive_create(primitive_iface, primitive_desc_iface);
 }
 
