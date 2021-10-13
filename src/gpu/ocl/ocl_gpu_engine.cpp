@@ -163,6 +163,7 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
         kernel_headers[i] = clCreateProgramWithSource(
                 context(), 1, &header, nullptr, &err);
         if (err != CL_SUCCESS) {
+            printf("hb after clCreateProgramWithSource_header %d, %d, %s\n", get_kernel_headers().size(), err, header);
             CHECK(release_headers(kernel_headers));
             OCL_CHECK(err);
         }
@@ -171,6 +172,7 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
     cl_program program = clCreateProgramWithSource(
             context(), 1, &code_string, nullptr, &err);
     if (err != CL_SUCCESS) {
+        printf("hb after clCreateProgramWithSource_code %d, %d, %s\n", get_kernel_headers().size(), err, code_string);
         CHECK(release_headers(kernel_headers));
         OCL_CHECK(err);
     }
@@ -180,6 +182,7 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
     err = clCompileProgram(program, 1, &dev, options.c_str(), n_headers,
             kernel_headers.data(), kernel_header_names.data(), nullptr,
             nullptr);
+    printf("hb after clCompileProgram %d\n", err);
 
     CHECK(release_headers(kernel_headers));
     OCL_CHECK(print_debug_info(err, program, dev));
@@ -190,12 +193,14 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
 
     std::shared_ptr<compute::binary_t> shared_binary;
     CHECK(get_ocl_program_binary(program, dev, shared_binary));
+    printf("hb after get_ocl_program_binary\n");
 
     *kernels = std::vector<compute::kernel_t>(kernel_names.size());
     for (size_t i = 0; i < kernel_names.size(); ++i) {
         cl_int err;
         ocl_wrapper_t<cl_kernel> ocl_kernel
                 = clCreateKernel(program, kernel_names[i], &err);
+        printf("hb after clCreateKernel %d\n", err);
         OCL_CHECK(err);
         std::vector<gpu::compute::scalar_type_t> arg_types;
         CHECK(get_kernel_arg_types(ocl_kernel, &arg_types));

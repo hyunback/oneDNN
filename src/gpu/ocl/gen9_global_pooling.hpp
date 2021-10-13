@@ -78,7 +78,7 @@ struct gen9_global_pooling_bwd_t : public gpu_primitive_t {
         compute::kernel_ctx_t kernel_ctx;
         status_t status = pd()->init_kernel_ctx(kernel_ctx);
         CHECK(status);
-
+        printf("hb create_kernel gen9_global_pooling_bwd\n");
         create_kernel(engine, &kernel_, "gen9_global_pooling_bwd", kernel_ctx);
         if (!kernel_) return status::runtime_error;
 

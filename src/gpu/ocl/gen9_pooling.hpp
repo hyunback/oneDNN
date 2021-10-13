@@ -96,6 +96,7 @@ struct gen9_pooling_fwd_t : public gpu_primitive_t {
         status_t status = pd()->init_kernel_ctx(kernel_ctx);
         CHECK(status);
 
+        printf("hb create_kernel gen9_pooling_fwd\n");
         create_kernel(engine, &kernel_, "gen9_pooling_fwd", kernel_ctx);
         if (!kernel_) return status::runtime_error;
 
