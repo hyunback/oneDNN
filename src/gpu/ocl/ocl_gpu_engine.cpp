@@ -137,7 +137,7 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
 
     const auto print_debug_info = [](cl_int err, cl_program p, cl_device_id d) {
         // Return error if verbose is not enabled.
-        if (err == CL_SUCCESS || get_verbose() == 0) return err;
+        if (err == CL_SUCCESS) return err;
 
         size_t log_length = 0;
         err = clGetProgramBuildInfo(
@@ -183,6 +183,9 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
             kernel_headers.data(), kernel_header_names.data(), nullptr,
             nullptr);
     printf("hb after clCompileProgram %d\n", err);
+    if (err != CL_SUCCESS) {
+        printf("code_string:\n%s\n", code_string);
+    }
 
     CHECK(release_headers(kernel_headers));
     OCL_CHECK(print_debug_info(err, program, dev));
