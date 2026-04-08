@@ -346,20 +346,20 @@ DECLARE_2D_TILE_VREDUCE(s_tile_type, SUBGROUP_SIZE, ugemm_kq_c_type_block0,
         mask_bc, mask_nbr, mask_nbc)
 #endif
 
-DECLARE_2D_TILE_SLM_ADD(dv_tile_type, float, SUBGROUP_SIZE,
+DECLARE_2D_TILE_SLM_OP(dv_tile_type, float, SUBGROUP_SIZE,
         ugemm_vs_c_type_block0, ugemm_vs_c_type_block1, ugemm_vs_c_type_nblock0,
-        ugemm_vs_c_type_nblock1)
+        ugemm_vs_c_type_nblock1, add, +=)
 #if (ugemm_qdSt_c_type_block0 != ugemm_vs_c_type_block0) \
         || (ugemm_qdSt_c_type_block1 != ugemm_vs_c_type_block1) \
         || (ugemm_qdSt_c_type_nblock0 != ugemm_vs_c_type_nblock0) \
         || (ugemm_qdSt_c_type_nblock1 != ugemm_vs_c_type_nblock1)
-DECLARE_2D_TILE_SLM_ADD(a_tile_type, float, SUBGROUP_SIZE,
+DECLARE_2D_TILE_SLM_OP(a_tile_type, float, SUBGROUP_SIZE,
         ugemm_qdSt_c_type_block0, ugemm_qdSt_c_type_block1,
-        ugemm_qdSt_c_type_nblock0, ugemm_qdSt_c_type_nblock1)
+        ugemm_qdSt_c_type_nblock0, ugemm_qdSt_c_type_nblock1, add, +=)
 #endif
-DECLARE_2D_TILE_SLM_ADD_T(a_tile_type, float, SUBGROUP_SIZE,
+DECLARE_2D_TILE_SLM_OP_T(a_tile_type, float, SUBGROUP_SIZE,
         ugemm_qdSt_c_type_block0, ugemm_qdSt_c_type_block1,
-        ugemm_qdSt_c_type_nblock0, ugemm_qdSt_c_type_nblock1)
+        ugemm_qdSt_c_type_nblock0, ugemm_qdSt_c_type_nblock1, add, +=)
 
 #define tile_load_block_rem_q(t, ptr, n, ld, off_r, off_c, load_rem) \
     if (load_rem) { \

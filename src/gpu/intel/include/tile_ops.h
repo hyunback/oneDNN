@@ -698,34 +698,6 @@ __attribute__((enable_if(sg == 16, "wrong subgroup size"))) {
             int offset_c) { \
         tile_store(t, ptr, m, n, m, offset_r, offset_c); \
     } \
-    __attribute__((overloadable)) void tile_store_t_full(tile_type t, \
-            global element_type *ptr, int ld, int offset_r, int offset_c) { \
-        ptr += ld * offset_r + offset_c; \
-        _Pragma("unroll") for (int j = 0; j < bc * nbc; j++, ptr++) { \
-            _Pragma("unroll") for (int i0 = 0; i0 < br * nbr; i0 += sg) { \
-                int i = ld * (i0 + get_sub_group_local_id()); \
-                ptr[i] = tile_access(t, i0, j, sg, br, bc, nbr); \
-            } \
-        } \
-    } \
-    __attribute__((overloadable)) void tile_store_t(tile_type t, \
-            global element_type *ptr, int m, int n, int ld, int offset_r, \
-            int offset_c) { \
-        if (m >= offset_r + br * nbr && n >= offset_c + bc * nbc) { \
-            tile_store_t_full(t, ptr, ld, offset_r, offset_c); \
-            return; \
-        } \
-        ptr += ld * offset_r + offset_c; \
-        _Pragma("unroll") for (int j = 0; j < bc * nbc; j++, ptr++) { \
-            if (offset_c + j < n) { \
-                _Pragma("unroll") for (int i0 = 0; i0 < br * nbr; i0 += sg) { \
-                    int i = ld * (i0 + get_sub_group_local_id()); \
-                    if ((offset_r + i0 + get_sub_group_local_id()) < m) \
-                        ptr[i] = tile_access(t, i0, j, sg, br, bc, nbr); \
-                } \
-            } \
-        } \
-    } \
     __attribute__((overloadable)) void tile_load_t_packed_src1(tile_type *t, \
             local element_type *ptr, int panel, int ld, int offset_r, \
             int offset_c) { \
@@ -1428,31 +1400,34 @@ __attribute__((overloadable)) void cooperative_prefetch_2d_internal(
     }
 }
 
-// inplace load-add-store to SLM, avoids allocating a full intermediate
-// accumulator tile.
-#define DECLARE_2D_TILE_SLM_ADD(tile_type, element_type, sg, br, bc, nbr, nbc) \
-    __attribute__((overloadable)) inline void tile_slm_add(tile_type addend, \
-            local element_type *ptr, int ld, int offset_r, int offset_c) { \
+// inplace ops (e.g. store or load-add-store) to SLM, which avoid allocating
+// a full intermediate accumulator tile.
+#define DECLARE_2D_TILE_SLM_OP( \
+        tile_type, element_type, sg, br, bc, nbr, nbc, opname, OP) \
+    __attribute__((overloadable)) inline void tile_slm_##opname( \
+            tile_type addend, local element_type *ptr, int ld, int offset_r, \
+            int offset_c) { \
         ptr += ld * offset_c + offset_r; \
         _Pragma("unroll") for (int j = 0; j < (bc) * (nbc); j++, ptr += ld) { \
             _Pragma("unroll") for (int i0 = 0; i0 < (br) * (nbr); \
                                    i0 += (sg)) { \
                 int i = i0 + get_sub_group_local_id(); \
-                ptr[i] += tile_access(addend, i0, j, sg, br, bc, nbr); \
+                ptr[i] OP tile_access(addend, i0, j, sg, br, bc, nbr); \
             } \
         } \
     }
 
-#define DECLARE_2D_TILE_SLM_ADD_T( \
-        tile_type, element_type, sg, br, bc, nbr, nbc) \
-    __attribute__((overloadable)) inline void tile_slm_add_t(tile_type addend, \
-            local element_type *ptr, int ld, int offset_r, int offset_c) { \
+#define DECLARE_2D_TILE_SLM_OP_T( \
+        tile_type, element_type, sg, br, bc, nbr, nbc, opname, OP) \
+    __attribute__((overloadable)) inline void tile_slm_##opname##_t( \
+            tile_type addend, local element_type *ptr, int ld, int offset_r, \
+            int offset_c) { \
         ptr += ld * offset_r + offset_c; \
         _Pragma("unroll") for (int j = 0; j < (bc) * (nbc); j++, ptr++) { \
             _Pragma("unroll") for (int i0 = 0; i0 < (br) * (nbr); \
                                    i0 += (sg)) { \
                 int i = ld * (i0 + get_sub_group_local_id()); \
-                ptr[i] += tile_access(addend, i0, j, sg, br, bc, nbr); \
+                ptr[i] OP tile_access(addend, i0, j, sg, br, bc, nbr); \
             } \
         } \
     }

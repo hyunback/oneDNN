@@ -113,6 +113,10 @@ DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type, SUBGROUP_SIZE,
         SUBGROUP_SIZE, ugemm_wgu_sg_tile_m, 1, 1, ugemm_wgu_sg_tile_n,
         CONVERT_DATA_T)
 
+DECLARE_2D_TILE_SLM_OP_T(s_tile_type, float, SUBGROUP_SIZE,
+        ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
+        ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1, mov, =)
+
 __attribute__((intel_reqd_sub_group_size(SUBGROUP_SIZE))) __kernel void
 micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         const __global WTS_GATE_DATA_T *W_gate,
@@ -153,13 +157,15 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     uint sg_i_wgu = sg_ij % ugemm_wgu_sg_per_wg_m;
     uint sg_j_wgu = sg_ij / ugemm_wgu_sg_per_wg_m;
 
-#define WGU_slm_size \
-    (ugemm_wgu_wg_tile_m * ugemm_wgu_wg_tile_n * sizeof(SRC_DATA_T))
+#define WGU_slm_size (ugemm_wgu_wg_tile_m * ugemm_wgu_wg_tile_n)
 
-    local char slm[WGU_slm_size + ugemm_wgu_slm_size];
+    local char slm[MAX(WGU_slm_size * sizeof(float),
+            WGU_slm_size * sizeof(SRC_DATA_T) + ugemm_wgu_slm_size)];
+    local char *slm_ptr = slm;
 
-    local SRC_DATA_T *wg_slm = (local SRC_DATA_T *)&slm[0];
-    local char *ugemm_gu_slm = &slm[WGU_slm_size];
+    local SRC_DATA_T *wg_slm = (local SRC_DATA_T *)slm_ptr;
+    slm_ptr += WGU_slm_size * sizeof(SRC_DATA_T);
+    local char *ugemm_gu_slm = slm_ptr;
 
     wgu_tile_type src_tile;
     uint wgu0_copy = wgu_tile_sg_n * sg_ij;
@@ -259,12 +265,17 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #endif
 
     s_tile_type_dst S_tile_dst;
-    tile_copy_reblock(S_WU_tile, &S_tile_dst);
-
     uint sg_i0_wgu = sg_i_wgu * ugemm_wgu_sg_tile_n;
     uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_m;
-
     size_t k_offset = get_group_id(1) / sg_per_wg * OC * MB;
-    tile_store_t(S_tile_dst, tmp_reduce_mem + k_offset, MB, OC, ldi,
-            wg_i0 + sg_j0_wgu, wg_j0 + sg_i0_wgu);
+
+    tile_slm_mov_t(S_WU_tile, (local float *)slm, ugemm_wgu_wg_tile_n,
+            sg_j0_wgu, sg_i0_wgu);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    tile_load(&S_WU_tile, (local float *)slm, ugemm_wgu_wg_tile_n,
+            ugemm_wgu_wg_tile_m, ugemm_wgu_wg_tile_n, sg_j0_wgu, sg_i0_wgu);
+
+    tile_copy_reblock(S_WU_tile, &S_tile_dst);
+    tile_store(S_tile_dst, tmp_reduce_mem + k_offset, OC, MB, ldi,
+            wg_j0 + sg_j0_wgu, wg_i0 + sg_i0_wgu);
 }

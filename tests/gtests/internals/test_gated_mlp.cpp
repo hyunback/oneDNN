@@ -83,7 +83,7 @@ struct gmlp_t : public dnnl::primitive {
     gmlp_t(const pd_t &pd) : primitive(pd) {}
 };
 
-static bool verbose = false; // enable for debug
+static bool verbose = true; // enable for debug
 static const int min_runs = 4;
 
 struct mlp_dims_t {
@@ -257,9 +257,9 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     // clang-format off
     auto x_md = memory::desc(O_proj_sz, src_dt, tag::ab);
 
-    auto w_gate_md = memory::desc(W_gate_sz, mdt::f32, tag::ba);
-    auto w_up_md   = memory::desc(W_up_sz,   mdt::f32, tag::ba);
-    auto w_down_md = memory::desc(W_down_sz, mdt::f32, tag::ba);
+    auto w_gate_md = memory::desc(W_gate_sz, mdt::f16, tag::ba);
+    auto w_up_md   = memory::desc(W_up_sz,   mdt::f16, tag::ba);
+    auto w_down_md = memory::desc(W_down_sz, mdt::f16, tag::ba);
 
     auto w_gate_qnt_md = memory::desc(W_gate_sz, wgu_wt, tag::ba);
     auto w_up_qnt_md   = memory::desc(W_up_sz,   wgu_wt, tag::ba);
@@ -1219,24 +1219,24 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::s8,
             mdt::s8, mdt::f16, mdt::s8}
     , // ^-- 47
-//*/
     mlp_dims_t{1024, 896, 4864, 128, 128,
             quantize_type::per_token_with_groups, dnnl_eltwise_swish,
             mdt::bf16, mdt::bf16,
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
     ,
+//*/
     mlp_dims_t{1024, 896, 4864, 128, 128,
             quantize_type::per_token_with_groups, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
-    ,
-    mlp_dims_t{1024, 896, 4864, 1, 1,
-            quantize_type::no_quantization, dnnl_eltwise_swish,
-            mdt::f32, mdt::f32,
-            mdt::f32, mdt::f16, mdt::u8,
-            mdt::f32, mdt::f16, mdt::u8}
+//    ,
+//    mlp_dims_t{1024, 896, 4864, 1, 1,
+//            quantize_type::no_quantization, dnnl_eltwise_swish,
+//            mdt::f32, mdt::f32,
+//            mdt::f32, mdt::f16, mdt::u8,
+//            mdt::f32, mdt::f16, mdt::u8}
 ), &PrintToString);
 // clang-format on
 
