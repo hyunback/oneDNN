@@ -28,7 +28,6 @@
 
 #define sg_per_wg (ugemm_wgu_sg_per_wg_m * ugemm_wgu_sg_per_wg_n)
 #define wgu_tile_sg_n DIV_UP(ugemm_wgu_wg_tile_n, sg_per_wg)
-
 #define wgu_tile_sg_m DIV_UP(ugemm_wgu_wg_tile_m, sg_per_wg)
 
 typedef ugemm_wgu_c_type s_tile_type;
@@ -53,19 +52,6 @@ DECLARE_2D_TILE_BLOCK_OPS(wgu_tile_type, uint, SUBGROUP_SIZE,
 DECLARE_2D_TILE_LOAD_PACKED_VEC(wgu_tile_type, SRC_DATA_T, VEC_TYPE2,
         SUBGROUP_SIZE, ugemm_wgu_wg_tile_m / 2, 1, 1, wgu_tile_sg_n)
 #endif
-
-#if PREFETCH_REMAINDER
-#define cooperative_prefetch_2d_maybe_rem cooperative_prefetch_2d_rem
-#else
-#define cooperative_prefetch_2d_maybe_rem( \
-        ptr, r, c, rmax, cmax, ld, sg_id, n_sg, sg_size, caching) \
-    cooperative_prefetch_2d(ptr, rmax, cmax, ld, sg_id, n_sg, sg_size, caching)
-#endif
-
-#define cooperative_prefetch_2d_k( \
-        ptr, r, c, rmax, cmax, ld, sg_id, n_sg, sg_size, caching) \
-    cooperative_prefetch_2d_maybe_rem( \
-            ptr, c, r, cmax, rmax, ld, sg_id, n_sg, sg_size, caching)
 
 #if REMAINDER_SRC
 #define tile_load_block_rem_src tile_load_block
@@ -103,14 +89,15 @@ DECLARE_2D_TILE_LOAD_PACKED_VEC(wgu_tile_type, SRC_DATA_T, VEC_TYPE2,
 #error "Unknown activation function defined"
 #endif
 
-DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE, ugemm_wgu_sg_tile_m,
-        1, 1, ugemm_wgu_sg_tile_n)
+DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE, ugemm_wgu_sg_tile_n,
+        1, 1, ugemm_wgu_sg_tile_m)
 DECLARE_2D_TILE_BLOCK_OPS(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE,
-        ugemm_wgu_sg_tile_m, 1, 1, ugemm_wgu_sg_tile_n)
+        ugemm_wgu_sg_tile_n, 1, 1, ugemm_wgu_sg_tile_m)
+
 DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type, SUBGROUP_SIZE,
         ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
         ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1, s_tile_type_dst,
-        SUBGROUP_SIZE, ugemm_wgu_sg_tile_m, 1, 1, ugemm_wgu_sg_tile_n,
+        SUBGROUP_SIZE, ugemm_wgu_sg_tile_n, 1, 1, ugemm_wgu_sg_tile_m,
         CONVERT_DATA_T)
 
 DECLARE_2D_TILE_SLM_OP_T(s_tile_type, float, SUBGROUP_SIZE,
@@ -154,8 +141,9 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     float wu_scale = convert_float(*wts_up_scales);
 #endif
 
-    uint sg_i_wgu = sg_ij % ugemm_wgu_sg_per_wg_m;
-    uint sg_j_wgu = sg_ij / ugemm_wgu_sg_per_wg_m;
+    // TODO: 2 options possible there: either /wg_m <-> /wg_n, or i <-> j
+    uint sg_i_wgu = sg_ij % ugemm_wgu_sg_per_wg_n;
+    uint sg_j_wgu = sg_ij / ugemm_wgu_sg_per_wg_n;
 
 #define WGU_slm_size (ugemm_wgu_wg_tile_m * ugemm_wgu_wg_tile_n)
 
@@ -190,9 +178,6 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
                 &src_tile, src, IC, MB, lds, k0, wg_i0 + wgu0_copy);
 #endif
 
-        int target_gid_mb = 0;
-        int target_gid_oc = 0;
-
         tile_store_t_sys_src1(src_tile, (local uint *)&wg_slm[0],
                 ugemm_wgu_wg_tile_m / 2, wgu0_copy, 0);
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -201,7 +186,7 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         s_tile_type FC_G_tile
                 = ugemm_wgu(W_gate + k0 / WTS_GATE_ELEMENTS_PER_BYTE, ldg,
                         wg_slm, ugemm_wgu_wg_tile_m, OC, ugemm_wgu_wg_tile_n,
-                        ugemm_wgu_wg_tile_m, wg_j0, 0, 0, sg_i_wgu, sg_j_wgu,
+                        ugemm_wgu_wg_tile_m, wg_j0, 0, 0, sg_j_wgu, sg_i_wgu,
                         ugemm_gu_slm
 #if WTS_GATE_SCALES == QUANTIZE_2D
                         ,
@@ -232,7 +217,7 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 
         s_tile_type FC_U_tile = ugemm_wgu(W_up + k0 / WTS_UP_ELEMENTS_PER_BYTE,
                 ldu, wg_slm, ugemm_wgu_wg_tile_m, OC, ugemm_wgu_wg_tile_n,
-                ugemm_wgu_wg_tile_m, wg_j0, 0, 0, sg_i_wgu, sg_j_wgu,
+                ugemm_wgu_wg_tile_m, wg_j0, 0, 0, sg_j_wgu, sg_i_wgu,
                 ugemm_gu_slm
 #if WTS_UP_SCALES == QUANTIZE_2D
                 ,
@@ -270,12 +255,13 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     size_t k_offset = get_group_id(1) / sg_per_wg * OC * MB;
 
     tile_slm_mov_t(S_WU_tile, (local float *)slm, ugemm_wgu_wg_tile_n,
-            sg_j0_wgu, sg_i0_wgu);
+            sg_i0_wgu, sg_j0_wgu);
     barrier(CLK_LOCAL_MEM_FENCE);
+
     tile_load(&S_WU_tile, (local float *)slm, ugemm_wgu_wg_tile_n,
-            ugemm_wgu_wg_tile_m, ugemm_wgu_wg_tile_n, sg_j0_wgu, sg_i0_wgu);
+            ugemm_wgu_wg_tile_m, ugemm_wgu_wg_tile_n, sg_i0_wgu, sg_j0_wgu);
 
     tile_copy_reblock(S_WU_tile, &S_tile_dst);
     tile_store(S_tile_dst, tmp_reduce_mem + k_offset, OC, MB, ldi,
-            wg_j0 + sg_j0_wgu, wg_i0 + sg_i0_wgu);
+            wg_j0 + sg_i0_wgu, wg_i0 + sg_j0_wgu);
 }
