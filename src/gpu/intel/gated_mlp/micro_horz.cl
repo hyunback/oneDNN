@@ -105,9 +105,9 @@ DECLARE_2D_TILE_BLOCK_OPS(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE,
         SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
 
 DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type_t, SUBGROUP_SIZE,
-        ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
-        ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1, s_tile_type_dst,
-        SUBGROUP_SIZE, SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC,
+        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC,
+        s_tile_type_dst, SUBGROUP_SIZE,
+        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC,
         CONVERT_DATA_T)
 
 DECLARE_2D_TILE_SLM_OP_T(s_tile_type, float, SUBGROUP_SIZE,
@@ -630,7 +630,7 @@ printf("DST SLM part %d (%ld %ld %ld):\n"
 
     tile_copy_reblock(S_tile_t, &S_tile_dst);
 
-//*
+/*
 printf("DST THREAD grp = (%lu %lu %lu), GLB = (%2lu %lu %lu) "
 "[sg_i0_wgu = %2u, sg_j0_wgu = %2u, wg_i0 = %2u, wg_j0 = %2u]:\n"
 " %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n"
@@ -676,10 +676,13 @@ printf("DST THREAD grp = (%lu %lu %lu), GLB = (%2lu %lu %lu) "
 //*/
 
 /*
-printf("DST THREAD (%lu %lu %lu) [sg_i0_wgu = %u, sg_j0_wgu = %u]:\n"
+printf("DST THREAD grp = (%lu %lu %lu), GLB = (%2lu %lu %lu) "
+"[sg_i0_wgu = %2u, sg_j0_wgu = %2u, wg_i0 = %2u, wg_j0 = %2u]:\n"
 " %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n"
 " %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n"
-, get_global_id(0), get_global_id(1), get_global_id(2), sg_i0_wgu, sg_j0_wgu
+, get_group_id(0), get_group_id(1), get_group_id(2)
+, get_global_id(0), get_global_id(1), get_global_id(2)
+, sg_i0_wgu, sg_j0_wgu, wg_i0, wg_j0
 , convert_float(S_tile_dst.x[ 0].s0), convert_float(S_tile_dst.x[ 1].s0)
 , convert_float(S_tile_dst.x[ 2].s0), convert_float(S_tile_dst.x[ 3].s0)
 , convert_float(S_tile_dst.x[ 4].s0), convert_float(S_tile_dst.x[ 5].s0)
@@ -700,5 +703,5 @@ printf("DST THREAD (%lu %lu %lu) [sg_i0_wgu = %u, sg_j0_wgu = %u]:\n"
 //*/
 
     tile_store(S_tile_dst, tmp_reduce_mem + k_offset, OC, MB, ldi,
-            wg_j0 + sg_i0_wgu, wg_i0 + sg_j0_wgu);
+            wg_j0 + sg_j0_wgu, wg_i0 + sg_i0_wgu);
 }
