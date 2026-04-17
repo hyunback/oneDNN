@@ -89,10 +89,10 @@ DECLARE_2D_TILE_LOAD_PACKED_VEC(wgu_tile_type, SRC_DATA_T, VEC_TYPE2,
 #error "Unknown activation function defined"
 #endif
 
-#define SG_TILE_BR ugemm_wgu_sg_tile_n
+#define SG_TILE_BR ugemm_wgu_sg_tile_m
 #define SG_TILE_BC 1
 #define SG_TILE_NBR 1
-#define SG_TILE_NBC ugemm_wgu_sg_tile_m
+#define SG_TILE_NBC ugemm_wgu_sg_tile_n
 
 DECLARE_2D_TILE(s_tile_type_t, float, SUBGROUP_SIZE,
         SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
@@ -625,8 +625,8 @@ printf("DST SLM part %d (%ld %ld %ld):\n"
     // TODO: del me
     tile_fill(S_tile_t, 0.0f);
 
-    tile_load(&S_tile_t, (local float *)slm, ugemm_wgu_wg_tile_n,
-            ugemm_wgu_wg_tile_m, ugemm_wgu_wg_tile_m, sg_i0_wgu, sg_j0_wgu);
+    tile_load(&S_tile_t, (local float *)slm, ugemm_wgu_wg_tile_m,
+            ugemm_wgu_wg_tile_n, ugemm_wgu_wg_tile_m, sg_j0_wgu, sg_i0_wgu);
 
     tile_copy_reblock(S_tile_t, &S_tile_dst);
 
@@ -640,22 +640,38 @@ printf("DST THREAD grp = (%lu %lu %lu), GLB = (%2lu %lu %lu) "
 , get_group_id(0), get_group_id(1), get_group_id(2)
 , get_global_id(0), get_global_id(1), get_global_id(2)
 , sg_i0_wgu, sg_j0_wgu, wg_i0, wg_j0
-, S_tile_t.x[ 0].s0, S_tile_t.x[ 0].s1
-, S_tile_t.x[ 1].s0, S_tile_t.x[ 1].s1
-, S_tile_t.x[ 2].s0, S_tile_t.x[ 2].s1
-, S_tile_t.x[ 3].s0, S_tile_t.x[ 3].s1
-, S_tile_t.x[ 4].s0, S_tile_t.x[ 4].s1
-, S_tile_t.x[ 5].s0, S_tile_t.x[ 5].s1
-, S_tile_t.x[ 6].s0, S_tile_t.x[ 6].s1
-, S_tile_t.x[ 7].s0, S_tile_t.x[ 7].s1
-, S_tile_t.x[ 8].s0, S_tile_t.x[ 8].s1
-, S_tile_t.x[ 9].s0, S_tile_t.x[ 9].s1
-, S_tile_t.x[10].s0, S_tile_t.x[10].s1
-, S_tile_t.x[11].s0, S_tile_t.x[11].s1
-, S_tile_t.x[12].s0, S_tile_t.x[12].s1
-, S_tile_t.x[13].s0, S_tile_t.x[13].s1
-, S_tile_t.x[14].s0, S_tile_t.x[14].s1
-, S_tile_t.x[15].s0, S_tile_t.x[15].s1
+, S_tile_t.x[ 0].s0
+, S_tile_t.x[ 1].s0
+, S_tile_t.x[ 2].s0
+, S_tile_t.x[ 3].s0
+, S_tile_t.x[ 4].s0
+, S_tile_t.x[ 5].s0
+, S_tile_t.x[ 6].s0
+, S_tile_t.x[ 7].s0
+, S_tile_t.x[ 8].s0
+, S_tile_t.x[ 9].s0
+, S_tile_t.x[10].s0
+, S_tile_t.x[11].s0
+, S_tile_t.x[12].s0
+, S_tile_t.x[13].s0
+, S_tile_t.x[14].s0
+, S_tile_t.x[15].s0
+, S_tile_t.x[16].s0
+, S_tile_t.x[17].s0
+, S_tile_t.x[18].s0
+, S_tile_t.x[19].s0
+, S_tile_t.x[20].s0
+, S_tile_t.x[21].s0
+, S_tile_t.x[22].s0
+, S_tile_t.x[23].s0
+, S_tile_t.x[24].s0
+, S_tile_t.x[25].s0
+, S_tile_t.x[26].s0
+, S_tile_t.x[27].s0
+, S_tile_t.x[28].s0
+, S_tile_t.x[29].s0
+, S_tile_t.x[30].s0
+, S_tile_t.x[31].s0
 );
 //*/
 
