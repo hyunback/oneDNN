@@ -89,25 +89,25 @@ DECLARE_2D_TILE_LOAD_PACKED_VEC(wgu_tile_type, SRC_DATA_T, VEC_TYPE2,
 #error "Unknown activation function defined"
 #endif
 
-#define SG_TILE_0 ugemm_wgu_sg_tile_n
-#define SG_TILE_1 1
-#define SG_TILE_2 1
-#define SG_TILE_3 ugemm_wgu_sg_tile_m
+#define SG_TILE_BR ugemm_wgu_sg_tile_n
+#define SG_TILE_BC 1
+#define SG_TILE_NBR 1
+#define SG_TILE_NBC ugemm_wgu_sg_tile_m
 
 DECLARE_2D_TILE(s_tile_type_t, float, SUBGROUP_SIZE,
-        SG_TILE_0, SG_TILE_1, SG_TILE_2, SG_TILE_3)
+        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
 DECLARE_2D_TILE_BLOCK_OPS(s_tile_type_t, float, SUBGROUP_SIZE,
-        SG_TILE_0, SG_TILE_1, SG_TILE_2, SG_TILE_3)
+        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
 
 DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE,
-        SG_TILE_0, SG_TILE_1, SG_TILE_2, SG_TILE_3)
+        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
 DECLARE_2D_TILE_BLOCK_OPS(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE,
-        SG_TILE_0, SG_TILE_1, SG_TILE_2, SG_TILE_3)
+        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
 
-DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type, SUBGROUP_SIZE,
+DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type_t, SUBGROUP_SIZE,
         ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
         ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1, s_tile_type_dst,
-        SUBGROUP_SIZE, SG_TILE_0, SG_TILE_1, SG_TILE_2, SG_TILE_3,
+        SUBGROUP_SIZE, SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC,
         CONVERT_DATA_T)
 
 DECLARE_2D_TILE_SLM_OP_T(s_tile_type, float, SUBGROUP_SIZE,
@@ -619,7 +619,7 @@ printf("DST SLM part %d (%ld %ld %ld):\n"
 
     // DST SLM CORRECT
 
-    s_tile_type S_tile_t;
+    s_tile_type_t S_tile_t;
     s_tile_type_dst S_tile_dst;
 
     // TODO: del me
@@ -631,20 +631,31 @@ printf("DST SLM part %d (%ld %ld %ld):\n"
     tile_copy_reblock(S_tile_t, &S_tile_dst);
 
 //*
-printf("DST THREAD (%lu %lu %lu) [sg_i0_wgu = %u, sg_j0_wgu = %u]:\n"
+printf("DST THREAD grp = (%lu %lu %lu), GLB = (%2lu %lu %lu) "
+"[sg_i0_wgu = %2u, sg_j0_wgu = %2u, wg_i0 = %2u, wg_j0 = %2u]:\n"
 " %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n"
 " %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n"
 " %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n"
 " %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f\n"
-, get_global_id(0), get_global_id(1), get_global_id(2), sg_i0_wgu, sg_j0_wgu
-, S_tile_t.x[0].s0, S_tile_t.x[0].s1, S_tile_t.x[0].s2, S_tile_t.x[0].s3
-, S_tile_t.x[0].s4, S_tile_t.x[0].s5, S_tile_t.x[0].s6, S_tile_t.x[0].s7
-, S_tile_t.x[1].s0, S_tile_t.x[1].s1, S_tile_t.x[1].s2, S_tile_t.x[1].s3
-, S_tile_t.x[1].s4, S_tile_t.x[1].s5, S_tile_t.x[1].s6, S_tile_t.x[1].s7
-, S_tile_t.x[2].s0, S_tile_t.x[2].s1, S_tile_t.x[2].s2, S_tile_t.x[2].s3
-, S_tile_t.x[2].s4, S_tile_t.x[2].s5, S_tile_t.x[2].s6, S_tile_t.x[2].s7
-, S_tile_t.x[3].s0, S_tile_t.x[3].s1, S_tile_t.x[3].s2, S_tile_t.x[3].s3
-, S_tile_t.x[3].s4, S_tile_t.x[3].s5, S_tile_t.x[3].s6, S_tile_t.x[3].s7
+, get_group_id(0), get_group_id(1), get_group_id(2)
+, get_global_id(0), get_global_id(1), get_global_id(2)
+, sg_i0_wgu, sg_j0_wgu, wg_i0, wg_j0
+, S_tile_t.x[ 0].s0, S_tile_t.x[ 0].s1
+, S_tile_t.x[ 1].s0, S_tile_t.x[ 1].s1
+, S_tile_t.x[ 2].s0, S_tile_t.x[ 2].s1
+, S_tile_t.x[ 3].s0, S_tile_t.x[ 3].s1
+, S_tile_t.x[ 4].s0, S_tile_t.x[ 4].s1
+, S_tile_t.x[ 5].s0, S_tile_t.x[ 5].s1
+, S_tile_t.x[ 6].s0, S_tile_t.x[ 6].s1
+, S_tile_t.x[ 7].s0, S_tile_t.x[ 7].s1
+, S_tile_t.x[ 8].s0, S_tile_t.x[ 8].s1
+, S_tile_t.x[ 9].s0, S_tile_t.x[ 9].s1
+, S_tile_t.x[10].s0, S_tile_t.x[10].s1
+, S_tile_t.x[11].s0, S_tile_t.x[11].s1
+, S_tile_t.x[12].s0, S_tile_t.x[12].s1
+, S_tile_t.x[13].s0, S_tile_t.x[13].s1
+, S_tile_t.x[14].s0, S_tile_t.x[14].s1
+, S_tile_t.x[15].s0, S_tile_t.x[15].s1
 );
 //*/
 
