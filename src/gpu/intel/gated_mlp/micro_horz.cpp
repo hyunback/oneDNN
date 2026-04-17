@@ -31,7 +31,7 @@ namespace gpu {
 namespace intel {
 namespace gated_mlp {
 
-#define UGEMM_UP_ONLY
+//#define UGEMM_UP_ONLY
 
 namespace {
 
@@ -54,7 +54,7 @@ struct gated_mlp_config_t {
 //gated_mlp_config_t xehpg_h32 = {16, 16,  8, 8};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1};
 //gated_mlp_config_t xehpg_h32 = { 8,  8,  4, 4};
-gated_mlp_config_t xehpg_h32 = {16, 32,  4, 1};
+gated_mlp_config_t xehpg_h32 = {16, 16, 8, 2};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1}; // big K
 //gated_mlp_config_t xehpg_h32 = {32, 32,  1, 1};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 32, 2};

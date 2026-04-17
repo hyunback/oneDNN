@@ -32,15 +32,15 @@
 #include "common/gated_mlp_iface.hpp"
 
 // uncomment to dump cpu memory buffers
-#define ENABLE_PRINT_MEM
+//#define ENABLE_PRINT_MEM
 
 // uncomment to disable everything except Up
-#define ENABLE_UP_ONLY
+//#define ENABLE_UP_ONLY
 
 namespace dnnl {
 namespace impl {
 
-static bool verbose = false; // enable for debug
+static bool verbose = true; // enable for debug
 static const int min_runs = 4;
 
 using tag = memory::format_tag;
@@ -355,16 +355,12 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     //    wd_group_size = W_down_sz[0] * W_down_sz[1];
     //}
 
-    //fill_random(x_data, x_md, -.25f, .25f);
-    fill_lin(x_data);
+    fill_random(x_data, x_md, -.25f, .25f);
 
     if (p.qtype == quantize_type::no_quantization) {
         if (verbose) printf("no quant init\n");
         fill_random(w_gate_data, w_gate_md, -1.f, 1.f);
-
-        //fill_random(w_up_data, w_up_md, -1.f, 1.f);
-        fill_hceye(w_up_data, p.ic);
-
+        fill_random(w_up_data, w_up_md, -1.f, 1.f);
         fill_random(w_down_data, w_down_md, -1.f, 1.f);
     } else {
         fill_random_quantized(w_gate_quantized_data, w_gate_qnt_md,
@@ -926,13 +922,13 @@ TEST_P(mlp_test_t, compare) {
 
 // clang-format off
 INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
+/*
     // no quantization
     mlp_dims_t {64, 64, 64, 1, 1,
             quantize_type::no_quantization, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
             mdt::f16, mdt::f16, mdt::f16,
             mdt::f16, mdt::f16, mdt::f16}
-/*
     , // ^-- 1
 
     mlp_dims_t{1024, 3584, 18944, 1, 1,
@@ -1229,12 +1225,12 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
     ,
+//*/
     mlp_dims_t{1024, 896, 4864, 128, 128,
             quantize_type::per_token_with_groups, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
-//*/
 //    ,
 //    mlp_dims_t{1024, 896, 4864, 1, 1,
 //            quantize_type::no_quantization, dnnl_eltwise_swish,
