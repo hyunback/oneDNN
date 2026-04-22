@@ -1149,6 +1149,7 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
     , // ^-- 36
+//*/
     mlp_dims_t{1024, 3584, 18944, 128, 128,
             quantize_type::per_token_with_groups, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
@@ -1172,6 +1173,7 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::f16, mdt::f16,
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
+/*
     , // ^-- 40
 
     // additional 4bit quant
@@ -1225,18 +1227,18 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
     ,
-//*/
     mlp_dims_t{1024, 896, 4864, 128, 128,
             quantize_type::per_token_with_groups, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
-//    ,
-//    mlp_dims_t{1024, 896, 4864, 1, 1,
-//            quantize_type::no_quantization, dnnl_eltwise_swish,
-//            mdt::f32, mdt::f32,
-//            mdt::f32, mdt::f16, mdt::u8,
-//            mdt::f32, mdt::f16, mdt::u8}
+    ,
+    mlp_dims_t{1024, 896, 4864, 1, 1,
+            quantize_type::no_quantization, dnnl_eltwise_swish,
+            mdt::f32, mdt::f32,
+            mdt::f32, mdt::f16, mdt::u8,
+            mdt::f32, mdt::f16, mdt::u8}
+//*/
 ), &PrintToString);
 // clang-format on
 

@@ -251,7 +251,6 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         tile_binary(S_WU_tile, FC_U_tile, binary_add);
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    barrier(CLK_LOCAL_MEM_FENCE);
 
 #ifndef UGEMM_UP_ONLY
     tile_elementwise(S_WG_tile, unary_activation);
