@@ -313,6 +313,7 @@ status_t micro_horz_t::pd_t::init_microkernels(
     reqs_wgu.push_back(gemmstone::StrategyRequirement::WGN == config.wg_n_gwu);
 
     gemmstone::microkernel::GEMMOptions opts_wgu;
+    opts_wgu.addToC = true;
     opts_wgu.localB = true;
     opts_wgu.slmPtr = true;
 

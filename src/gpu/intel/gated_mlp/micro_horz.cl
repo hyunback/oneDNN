@@ -184,35 +184,29 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         barrier(CLK_LOCAL_MEM_FENCE);
 
 #ifndef UGEMM_UP_ONLY
-        s_tile_type FC_G_tile
-                = ugemm_wgu(W_gate + k0 / WTS_GATE_ELEMENTS_PER_BYTE, ldg,
-                        wg_slm, ugemm_wgu_wg_tile_m, OC, ugemm_wgu_wg_tile_n,
-                        ugemm_wgu_wg_tile_m, wg_j0, 0, 0, sg_j_wgu, sg_i_wgu,
-                        ugemm_gu_slm
+        ugemm_wgu(W_gate + k0 / WTS_GATE_ELEMENTS_PER_BYTE, ldg, wg_slm,
+                ugemm_wgu_wg_tile_m, &S_WG_tile, OC, ugemm_wgu_wg_tile_n,
+                ugemm_wgu_wg_tile_m, wg_j0, 0, 0, sg_j_wgu, sg_i_wgu,
+                ugemm_gu_slm
 #if WTS_GATE_SCALES == QUANTIZE_2D
-                        ,
-                        wts_gate_scales + (k0 / WTS_GATE_GROUP_SIZE) * ldgq
+                ,
+                wts_gate_scales + (k0 / WTS_GATE_GROUP_SIZE) * ldgq
 #endif
 #if WTS_GATE_ZERO_POINTS
-                        ,
-                        wts_gate_zp
-                                + (k0 / WTS_GATE_GROUP_SIZE) * ldgq
-                                        / WTS_GATE_ZP_ELEMENTS_PER_BYTE
+                ,
+                wts_gate_zp
+                        + (k0 / WTS_GATE_GROUP_SIZE) * ldgq
+                                / WTS_GATE_ZP_ELEMENTS_PER_BYTE
 #endif
 #if (WTS_GATE_SCALES == QUANTIZE_2D) || WTS_GATE_ZERO_POINTS
-                        ,
-                        ldgq
+                ,
+                ldgq
 #endif
-                );
-
-        // TODO: S_W[G,U]_tile might end up clobbered at each ukernel call!
-        //       The proper solution for now is to acccumulate right to SLM.
-        tile_binary(S_WG_tile, FC_G_tile, binary_add);
-        barrier(CLK_LOCAL_MEM_FENCE);
+        );
 #endif // UGEMM_UP_ONLY
 
-        s_tile_type FC_U_tile = ugemm_wgu(W_up + k0 / WTS_UP_ELEMENTS_PER_BYTE,
-                ldu, wg_slm, ugemm_wgu_wg_tile_m, OC, ugemm_wgu_wg_tile_n,
+        ugemm_wgu(W_up + k0 / WTS_UP_ELEMENTS_PER_BYTE, ldu, wg_slm,
+                ugemm_wgu_wg_tile_m, &S_WU_tile, OC, ugemm_wgu_wg_tile_n,
                 ugemm_wgu_wg_tile_m, wg_j0, 0, 0, sg_j_wgu, sg_i_wgu,
                 ugemm_gu_slm
 #if WTS_UP_SCALES == QUANTIZE_2D
@@ -231,7 +225,6 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #endif
         );
 
-        tile_binary(S_WU_tile, FC_U_tile, binary_add);
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
