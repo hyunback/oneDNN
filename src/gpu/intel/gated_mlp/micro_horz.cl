@@ -205,11 +205,6 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #endif
                 );
 
-#if WTS_GATE_SCALES == QUANTIZE_COMMON
-#define wg_scale_op(x) ((x) * wg_scale)
-        tile_elementwise(FC_G_tile, wg_scale_op);
-#endif
-
         // TODO: S_W[G,U]_tile might end up clobbered at each ukernel call!
         //       The proper solution for now is to acccumulate right to SLM.
         tile_binary(S_WG_tile, FC_G_tile, binary_add);
@@ -236,16 +231,21 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #endif
         );
 
-#if WTS_UP_SCALES == QUANTIZE_COMMON
-#define wu_scale_op(x) ((x) * wu_scale)
-        tile_elementwise(FC_U_tile, wu_scale_op);
-#endif
         tile_binary(S_WU_tile, FC_U_tile, binary_add);
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
+#if WTS_UP_SCALES == QUANTIZE_COMMON
+#define wu_scale_op(x) ((x) * wu_scale)
+    tile_elementwise(S_WU_tile, wu_scale_op);
+#endif
 #ifndef UGEMM_UP_ONLY
+#if WTS_GATE_SCALES == QUANTIZE_COMMON
+#define wg_scale_op(x) unary_activation((x) * wg_scale)
+    tile_elementwise(S_WG_tile, wg_scale_op);
+#else
     tile_elementwise(S_WG_tile, unary_activation);
+#endif
     tile_binary(S_WU_tile, S_WG_tile, binary_mul);
 #endif
 
