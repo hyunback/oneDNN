@@ -96,12 +96,8 @@ DECLARE_2D_TILE_LOAD_PACKED_VEC(wgu_tile_type, SRC_DATA_T, VEC_TYPE2,
 
 DECLARE_2D_TILE(s_tile_type_t, float, SUBGROUP_SIZE,
         SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
-DECLARE_2D_TILE_BLOCK_OPS(s_tile_type_t, float, SUBGROUP_SIZE,
-        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
 
 DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE,
-        SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
-DECLARE_2D_TILE_BLOCK_OPS(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE,
         SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC)
 
 DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type_t, SUBGROUP_SIZE,
@@ -109,10 +105,6 @@ DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type_t, SUBGROUP_SIZE,
         s_tile_type_dst, SUBGROUP_SIZE,
         SG_TILE_BR, SG_TILE_BC, SG_TILE_NBR, SG_TILE_NBC,
         CONVERT_DATA_T)
-
-DECLARE_2D_TILE_SLM_OP_T(s_tile_type, float, SUBGROUP_SIZE,
-        ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
-        ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1, mov, =)
 
 __attribute__((intel_reqd_sub_group_size(SUBGROUP_SIZE))) __kernel void
 micro_gated_mlp_horz(const __global SRC_DATA_T *src,
@@ -261,7 +253,7 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_m;
     size_t k_offset = get_group_id(1) / sg_per_wg * OC * MB;
 
-    tile_slm_mov_t(S_WU_tile, (local float *)slm, ugemm_wgu_wg_tile_m,
+    tile_store_t(S_WU_tile, (local float *)slm, MB, OC, ugemm_wgu_wg_tile_m,
             sg_i0_wgu, sg_j0_wgu);
     barrier(CLK_LOCAL_MEM_FENCE);
 

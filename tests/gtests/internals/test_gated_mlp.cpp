@@ -35,7 +35,7 @@
 //#define ENABLE_PRINT_MEM
 
 // uncomment to disable everything except Up
-//#define ENABLE_UP_ONLY
+#define ENABLE_UP_ONLY
 
 namespace dnnl {
 namespace impl {
@@ -490,6 +490,7 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
             eng, O_proj_md, W_up_md, FC_up_md, gen_default_attr(p.qtype));
     auto bmm0_prim = matmul(bmm0_pd);
 
+#ifndef ENABLE_UP_ONLY
     // fc_gate -> swish -> mul
     auto bmm1_attr = gen_default_attr(p.qtype);
     post_ops bmm1_po;
@@ -510,6 +511,7 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
     auto bmm2_pd = matmul::primitive_desc(
             eng, FC_gate_md, W_down_md, FC_down_md, gen_default_attr(p.qtype));
     auto bmm2_prim = matmul(bmm2_pd);
+#endif
 
     const auto loop = [&](bool print = false) {
 #ifdef ENABLE_PRINT_MEM
@@ -1150,11 +1152,12 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::u8}
     , // ^-- 36
 //*/
-    mlp_dims_t{1024, 3584, 18944, 128, 128,
-            quantize_type::per_token_with_groups, dnnl_eltwise_swish,
+    mlp_dims_t{1024, 4096, 27392, 128, 128,
+            quantize_type::no_quantization, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
-            mdt::u4, mdt::f16, mdt::u8,
-            mdt::u4, mdt::f16, mdt::u8}
+            mdt::f16, mdt::f16, mdt::f16,
+            mdt::f16, mdt::f16, mdt::f16}
+/*
     , // ^-- 37
     mlp_dims_t{1024, 896, 4864, 128, 128,
             quantize_type::per_token_with_groups, dnnl_eltwise_swish,

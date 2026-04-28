@@ -31,7 +31,7 @@ namespace gpu {
 namespace intel {
 namespace gated_mlp {
 
-//#define UGEMM_UP_ONLY
+#define UGEMM_UP_ONLY
 
 namespace {
 
@@ -54,7 +54,7 @@ struct gated_mlp_config_t {
 //gated_mlp_config_t xehpg_h32 = {16, 16,  8, 8};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1};
 //gated_mlp_config_t xehpg_h32 = { 8,  8,  4, 4};
-gated_mlp_config_t xehpg_h32 = {16, 16, 8, 2};
+gated_mlp_config_t xehpg_h32 = {16, 64,  8, 2};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1}; // big K
 //gated_mlp_config_t xehpg_h32 = {32, 32,  1, 1};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 32, 2};
@@ -195,7 +195,7 @@ status_t micro_horz_t::pd_t::init_microkernels(
             compute::mayiuse_microkernels(intel_engine), status::unimplemented,
             "Microkernels not supported by the OpenCL driver.");
 
-    gated_mlp_config_t *config = nullptr;
+    gated_mlp_config_t config = {};
 
     switch (dev_info->gpu_arch()) {
         case compute::gpu_arch_t::xe_hpg: break;
@@ -204,7 +204,26 @@ status_t micro_horz_t::pd_t::init_microkernels(
         case compute::gpu_arch_t::xe3: break;
         default: break;
     }
-    config = &xehpg_h32; // TODO
+    config = xehpg_h32; // TODO
+
+    auto gmlp_conf = gpu_utils::dev_getenv("GMLP_CONF", std::string());
+    if (!gmlp_conf.empty()) {
+        std::vector<int> tokens;
+        std::stringstream ss(gmlp_conf);
+        std::string tmp;
+        try {
+            while (getline(ss, tmp, ' '))
+                tokens.push_back(std::stoi(tmp));
+            if (tokens.size() == 4) {
+                config.unroll_m_gwu = tokens[0];
+                config.unroll_n_gwu = tokens[1];
+                config.wg_m_gwu = tokens[2];
+                config.wg_n_gwu = tokens[3];
+            }
+        } catch (...) {}
+        printf("GMLP_CONF: (%d %d %d %d)\n", config.unroll_m_gwu,
+                config.unroll_n_gwu, config.wg_m_gwu, config.wg_n_gwu);
+    }
 
     gemmstone::microkernel::HWInformation hw_info;
     hw_info.euCount = dev_info->eu_count();
@@ -245,7 +264,7 @@ status_t micro_horz_t::pd_t::init_microkernels(
     problem_wgu.B.setAlignment(64);
     problem_wgu.B.crosspack = 2;
 
-    problem_wgu.B.tileR = uint16_t(config->unroll_m_gwu * config->wg_m_gwu);
+    problem_wgu.B.tileR = uint16_t(config.unroll_m_gwu * config.wg_m_gwu);
     problem_wgu.B.tileC = uint16_t(sg_size(engine));
 
     bool wgu_common_scales
@@ -286,12 +305,12 @@ status_t micro_horz_t::pd_t::init_microkernels(
     std::vector<gemmstone::StrategyRequirement> reqs_wgu;
 
     reqs_wgu.push_back(
-            gemmstone::StrategyRequirement::UnrollM == config->unroll_m_gwu);
+            gemmstone::StrategyRequirement::UnrollM == config.unroll_m_gwu);
     reqs_wgu.push_back(
-            gemmstone::StrategyRequirement::UnrollN == config->unroll_n_gwu);
+            gemmstone::StrategyRequirement::UnrollN == config.unroll_n_gwu);
 
-    reqs_wgu.push_back(gemmstone::StrategyRequirement::WGM == config->wg_m_gwu);
-    reqs_wgu.push_back(gemmstone::StrategyRequirement::WGN == config->wg_n_gwu);
+    reqs_wgu.push_back(gemmstone::StrategyRequirement::WGM == config.wg_m_gwu);
+    reqs_wgu.push_back(gemmstone::StrategyRequirement::WGN == config.wg_n_gwu);
 
     gemmstone::microkernel::GEMMOptions opts_wgu;
     opts_wgu.localB = true;
