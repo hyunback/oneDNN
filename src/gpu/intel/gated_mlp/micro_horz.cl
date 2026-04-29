@@ -189,19 +189,28 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     s_tile_type S_WU_tile;
     tile_fill(S_WU_tile, 0.0f);
 
-    _Pragma("unroll") for (int k0 = 0; k0 < IC; k0 += ugemm_wgu_wg_tile_m) {
-        src_to_slm(src, wg_slm[0], SRC_S0, IC, MB, k0, wg_i0, sg_ij);
+    src_to_slm(src, wg_slm[0], SRC_S0, IC, MB, 0, wg_i0, sg_ij);
+    int kL = (DIV_UP(IC, ugemm_wgu_wg_tile_m) - 1) * ugemm_wgu_wg_tile_m;
+    _Pragma("unroll") for (int k0 = 0; k0 < kL; k0 += ugemm_wgu_wg_tile_m) {
+        int curr = (k0 / ugemm_wgu_wg_tile_m) % 2;
         barrier(CLK_LOCAL_MEM_FENCE);
-
+        src_to_slm(src, wg_slm[1 - curr], SRC_S0, IC, MB,
+                k0 + ugemm_wgu_wg_tile_m, wg_i0, sg_ij);
 #ifndef UGEMM_UP_ONLY
-        do_gemm(wg_slm[0], W_gate, &S_WG_tile, wts_gate_scales, wts_gate_zp,
+        do_gemm(wg_slm[curr], W_gate, &S_WG_tile, wts_gate_scales, wts_gate_zp,
                 ugemm_gu_slm, W_GATE_S1, OC, k0, wg_j0, sg_i_wgu, sg_j_wgu);
 #endif
-        do_gemm(wg_slm[0], W_up, &S_WU_tile, wts_up_scales, wts_up_zp,
+        do_gemm(wg_slm[curr], W_up, &S_WU_tile, wts_up_scales, wts_up_zp,
                 ugemm_gu_slm, W_UP_S1, OC, k0, wg_j0, sg_i_wgu, sg_j_wgu);
-
-        barrier(CLK_LOCAL_MEM_FENCE);
     }
+    int last = (kL / ugemm_wgu_wg_tile_m) % 2;
+    barrier(CLK_LOCAL_MEM_FENCE);
+#ifndef UGEMM_UP_ONLY
+    do_gemm(wg_slm[last], W_gate, &S_WG_tile, wts_gate_scales, wts_gate_zp,
+            ugemm_gu_slm, W_GATE_S1, OC, kL, wg_j0, sg_i_wgu, sg_j_wgu);
+#endif
+    do_gemm(wg_slm[last], W_up, &S_WU_tile, wts_up_scales, wts_up_zp,
+            ugemm_gu_slm, W_UP_S1, OC, kL, wg_j0, sg_i_wgu, sg_j_wgu);
 
 #if WTS_UP_SCALES == QUANTIZE_COMMON
 #define wu_scale_op(x) ((x) * wu_scale)
@@ -221,6 +230,7 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_m;
     size_t k_offset = get_group_id(1) / sg_per_wg * OC * MB;
 
+    barrier(CLK_LOCAL_MEM_FENCE);
     tile_store_t(S_WU_tile, (local float *)slm, MB, OC, ugemm_wgu_wg_tile_m,
             sg_i0_wgu, sg_j0_wgu);
     barrier(CLK_LOCAL_MEM_FENCE);
