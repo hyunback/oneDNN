@@ -35,7 +35,7 @@
 //#define ENABLE_PRINT_MEM
 
 // uncomment to disable everything except Up
-#define ENABLE_UP_ONLY
+//#define ENABLE_UP_ONLY
 
 namespace dnnl {
 namespace impl {
@@ -356,11 +356,49 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     //}
 
     fill_random(x_data, x_md, -.25f, .25f);
+    //fill_lin(x_data);
+    //fill_const(x_data, 0.f);
+    //x_data[p.ic * 0 + 0] =  1.f;
+    //x_data[p.ic * 1 + 0] =  5.f;
+    //x_data[p.ic * 2 + 0] =  9.f;
+    //x_data[p.ic * 3 + 0] = 13.f;
+    //x_data[p.ic * 0 + 1] =  2.f;
+    //x_data[p.ic * 1 + 1] =  6.f;
+    //x_data[p.ic * 2 + 1] = 10.f;
+    //x_data[p.ic * 3 + 1] = 14.f;
+    //x_data[p.ic * 0 + 2] =  3.f;
+    //x_data[p.ic * 1 + 2] =  7.f;
+    //x_data[p.ic * 2 + 2] = 11.f;
+    //x_data[p.ic * 3 + 2] = 15.f;
+    //x_data[p.ic * 0 + 3] =  4.f;
+    //x_data[p.ic * 1 + 3] =  8.f;
+    //x_data[p.ic * 2 + 3] = 12.f;
+    //x_data[p.ic * 3 + 3] = 16.f;
 
     if (p.qtype == quantize_type::no_quantization) {
         if (verbose) printf("no quant init\n");
         fill_random(w_gate_data, w_gate_md, -1.f, 1.f);
+
         fill_random(w_up_data, w_up_md, -1.f, 1.f);
+        //fill_hceye(w_up_data, p.ic, 1.f); for (int i = 0; i < p.ic; i++) w_up_data[i] = 1.f;
+        //fill_const(w_up_data, 0.f);
+        //w_up_data[p.ic * 0 + 0] = 10.f;
+        //w_up_data[p.ic * 0 + 1] =  0.f;
+        //w_up_data[p.ic * 0 + 2] =  0.f;
+        //w_up_data[p.ic * 0 + 3] =  0.f;
+        //w_up_data[p.ic * 1 + 0] = 10.f;
+        //w_up_data[p.ic * 1 + 1] =  1.f;
+        //w_up_data[p.ic * 1 + 2] =  0.f;
+        //w_up_data[p.ic * 1 + 3] =  0.f;
+        //w_up_data[p.ic * 2 + 0] = 10.f;
+        //w_up_data[p.ic * 2 + 1] =  0.f;
+        //w_up_data[p.ic * 2 + 2] =  1.f;
+        //w_up_data[p.ic * 2 + 3] =  0.f;
+        //w_up_data[p.ic * 3 + 0] = 10.f;
+        //w_up_data[p.ic * 3 + 1] =  0.f;
+        //w_up_data[p.ic * 3 + 2] =  0.f;
+        //w_up_data[p.ic * 3 + 3] =  1.f;
+
         fill_random(w_down_data, w_down_md, -1.f, 1.f);
     } else {
         fill_random_quantized(w_gate_quantized_data, w_gate_qnt_md,
