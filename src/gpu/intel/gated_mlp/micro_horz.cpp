@@ -31,7 +31,7 @@ namespace gpu {
 namespace intel {
 namespace gated_mlp {
 
-//#define UGEMM_UP_ONLY
+#define UGEMM_UP_ONLY
 
 namespace {
 
@@ -235,12 +235,12 @@ status_t micro_horz_t::pd_t::init_microkernels(
 
     gemmstone::GEMMProblem problem;
     problem.Ta_ext = gemm::jit::convert_dnnl_to_kernel_type(
-            arg_md(DNNL_ARG_SRC)->data_type);
-    problem.Tb_ext = gemm::jit::convert_dnnl_to_kernel_type(
             arg_md(DNNL_ARG_WEIGHTS_GATE)->data_type);
+    problem.Tb_ext = gemm::jit::convert_dnnl_to_kernel_type(
+            arg_md(DNNL_ARG_SRC)->data_type);
     problem.Tc_ext
             = gemm::jit::convert_dnnl_to_kernel_type(inter_md->data_type);
-    problem.Ta = problem.Tb = get_ab_type(problem.Ta_ext, problem.Tb_ext);
+    problem.Ta = problem.Tb = get_ab_type(problem.Tb_ext, problem.Ta_ext);
     problem.Tc = gemmstone::Type::f32;
     problem.Ts = problem.Tc;
 
@@ -252,7 +252,7 @@ status_t micro_horz_t::pd_t::init_microkernels(
     auto problem_wgu = std::move(problem);
     problem_wgu.A.layout = gemmstone::MatrixLayout::T;
     problem_wgu.B.layout = gemmstone::MatrixLayout::N;
-    problem_wgu.C.layout = gemmstone::MatrixLayout::T;
+    problem_wgu.C.layout = gemmstone::MatrixLayout::N;
 
     const memory_desc_wrapper W_gate_mdw(arg_md(DNNL_ARG_WEIGHTS_GATE));
     const memory_desc_wrapper W_up_mdw(arg_md(DNNL_ARG_WEIGHTS_UP));
@@ -260,9 +260,9 @@ status_t micro_horz_t::pd_t::init_microkernels(
         return int(gemm_desc_t::get_ld(*mdw.md_) * mdw.data_type_size());
     };
     problem_wgu.A.setAlignment(gemmstone::microkernel::alignmentForLD(
-            alignment(arg_md(DNNL_ARG_SRC))));
-    problem_wgu.B.setAlignment(gemmstone::microkernel::alignmentForLD(
             std::min(alignment(W_gate_mdw), alignment(W_up_mdw))));
+    problem_wgu.B.setAlignment(gemmstone::microkernel::alignmentForLD(
+            alignment(arg_md(DNNL_ARG_SRC))));
 
     bool wgu_common_scales
             = with_quantize_common(attr()->scales_, DNNL_ARG_WEIGHTS_GATE);
@@ -271,25 +271,25 @@ status_t micro_horz_t::pd_t::init_microkernels(
 
     if (with_wts_gate_scales(this) && !wgu_common_scales) {
         auto scale_dt = wts_gate_scales_dt(this);
-        problem_wgu.Tb_scale = gemm::jit::convert_dnnl_to_kernel_type(scale_dt);
-        problem_wgu.B_scale.alignment
+        problem_wgu.Ta_scale = gemm::jit::convert_dnnl_to_kernel_type(scale_dt);
+        problem_wgu.A_scale.alignment
                 = uint8_t(types::data_type_size(scale_dt));
-        problem_wgu.B_scale.layout = gemmstone::MatrixLayout::N;
-        problem_wgu.bsPtrDims = 2;
+        problem_wgu.A_scale.layout = gemmstone::MatrixLayout::N;
+        problem_wgu.asPtrDims = 2;
     }
     if (with_wts_gate_zp(this)) {
         auto zp_dt = wts_gate_zp_dt(this);
-        problem_wgu.Tbo = gemm::jit::convert_dnnl_to_kernel_type(zp_dt);
-        problem_wgu.BO.alignment = uint8_t(types::data_type_size(zp_dt));
-        problem_wgu.BO.layout = gemmstone::MatrixLayout::N;
-        problem_wgu.boPtrDims = (wgu_common_zp) ? 0 : 2;
-        problem_wgu.bOffset = gemmstone::ABOffset::Calc;
+        problem_wgu.Tao = gemm::jit::convert_dnnl_to_kernel_type(zp_dt);
+        problem_wgu.AO.alignment = uint8_t(types::data_type_size(zp_dt));
+        problem_wgu.AO.layout = gemmstone::MatrixLayout::N;
+        problem_wgu.aoPtrDims = (wgu_common_zp) ? 0 : 2;
+        problem_wgu.aOffset = gemmstone::ABOffset::Calc;
     }
 
     if (with_wts_gate_scales(this) || with_wts_gate_zp(this)) {
-        problem_wgu.bqGroupN = problem_wgu.bqGroupK = 1;
+        problem_wgu.aqGroupM = problem_wgu.aqGroupK = 1;
         if (!wgu_common_scales && !wgu_common_zp)
-            problem_wgu.bqGroupK = int(wts_gate_group_size(this));
+            problem_wgu.aqGroupK = int(wts_gate_group_size(this));
     }
 
     /* Set up transposed problem size */
@@ -310,8 +310,8 @@ status_t micro_horz_t::pd_t::init_microkernels(
     reqs_wgu.push_back(gemmstone::StrategyRequirement::WGN == config.wg_n_gwu);
 
     gemmstone::microkernel::GEMMOptions opts_wgu;
-    opts_wgu.scaleB = with_wts_gate_scales(this) && !wgu_common_scales;
-    opts_wgu.offsetB = with_wts_gate_zp(this);
+    opts_wgu.scaleA = with_wts_gate_scales(this) && !wgu_common_scales;
+    opts_wgu.offsetA = with_wts_gate_zp(this);
 
     try {
         gemm_gate_up_pkg_

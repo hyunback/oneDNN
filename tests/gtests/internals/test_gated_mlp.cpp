@@ -32,15 +32,15 @@
 #include "common/gated_mlp_iface.hpp"
 
 // uncomment to dump cpu memory buffers
-//#define ENABLE_PRINT_MEM
+#define ENABLE_PRINT_MEM
 
 // uncomment to disable everything except Up
-//#define ENABLE_UP_ONLY
+#define ENABLE_UP_ONLY
 
 namespace dnnl {
 namespace impl {
 
-static bool verbose = true; // enable for debug
+static bool verbose = false; // enable for debug
 static const int min_runs = 4;
 
 using tag = memory::format_tag;
@@ -356,7 +356,7 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     //}
 
     fill_random(x_data, x_md, -.25f, .25f);
-    //fill_lin(x_data);
+    //fill_lin(x_data, .1f);
     //fill_const(x_data, 0.f);
     //x_data[p.ic * 0 + 0] =  1.f;
     //x_data[p.ic * 1 + 0] =  5.f;
@@ -403,13 +403,19 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     } else {
         fill_random_quantized(w_gate_quantized_data, w_gate_qnt_md,
                 (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
+
         fill_random_quantized(w_up_quantized_data, w_up_qnt_md,
                 (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
+        //fill_hceye(w_up_quantized_data, p.ic, 1.f); for (int i = 0; i < p.ic; i++) w_up_quantized_data[i] = 1.f;
+
         fill_random_quantized(w_down_quantized_data, w_down_qnt_md,
                 (wd_wt == mdt::u4 || wd_wt == mdt::u8));
 
         fill_random_scales(w_gate_scales_data, w_gate_scales_md);
+
         fill_random_scales(w_up_scales_data, w_up_scales_md);
+        //fill_const(w_up_scales_data, 1.f); for (int i = 0; i < p.oc; i++) w_up_scales_data[i] = 0.f;
+
         fill_random_scales(w_down_scales_data, w_down_scales_md);
 
         bool wgu_zp_unsigned = (wgu_zp_dt == mdt::u4 || wgu_zp_dt == mdt::u8);
@@ -422,6 +428,7 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
         fill_random_quantized(w_gate_zp_data, w_gate_zp_md, wgu_zp_unsigned);
 
         fill_random_quantized(w_up_zp_data, w_up_zp_md, wgu_zp_unsigned);
+        //fill_const(w_up_zp_data, 0.f);
 
         w_gate_data = dequantize(w_gate_quantized_data, w_gate_md,
                 w_gate_scales_md, w_gate_zp_data, w_gate_scales_data,
@@ -1190,11 +1197,15 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::u8}
     , // ^-- 36
 //*/
-    mlp_dims_t{1024, 4096, 27392, 128, 128,
-            quantize_type::no_quantization, dnnl_eltwise_swish,
+    mlp_dims_t{1024, 4096, 1024, 128, 128,
+            //quantize_type::no_quantization, dnnl_eltwise_swish,
+            //mdt::f16, mdt::f16,
+            //mdt::f16, mdt::f16, mdt::f16,
+            //mdt::f16, mdt::f16, mdt::f16}
+            quantize_type::per_token_with_groups, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
-            mdt::f16, mdt::f16, mdt::f16,
-            mdt::f16, mdt::f16, mdt::f16}
+            mdt::u4, mdt::f16, mdt::u8,
+            mdt::u4, mdt::f16, mdt::u8}
 /*
     , // ^-- 37
     mlp_dims_t{1024, 896, 4864, 128, 128,

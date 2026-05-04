@@ -109,7 +109,7 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     uint sg_i0_wgu = sg_i_wgu * ugemm_wgu_sg_tile_m;
     uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_n;
 
-    s_tile_type S_WU_tile = ugemm_wgu(src, SRC_S0, W_up, W_UP_S1,
+    s_tile_type S_WU_tile = ugemm_wgu(W_up, W_UP_S1, src, SRC_S0,
             MB, OC, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
 #if WTS_UP_SCALES == QUANTIZE_2D
             ,
@@ -130,7 +130,7 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #endif
 
 #ifndef UGEMM_UP_ONLY
-    s_tile_type S_WG_tile = ugemm_wgu(src, SRC_S0, W_gate, W_GATE_S1,
+    s_tile_type S_WG_tile = ugemm_wgu(W_gate, W_GATE_S1, src, SRC_S0,
             MB, OC, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
 #if WTS_GATE_SCALES == QUANTIZE_2D
             ,
@@ -156,6 +156,6 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 
     s_tile_type_dst S_tile_dst;
     tile_copy_reblock(S_WU_tile, &S_tile_dst);
-    tile_store(S_tile_dst, tmp_reduce_mem, OC, MB, INTER_S0,
-            wg_j0 + sg_j0_wgu, wg_i0 + sg_i0_wgu);
+    tile_store(S_tile_dst, tmp_reduce_mem, MB, OC, INTER_S0,
+            wg_i0 + sg_i0_wgu, wg_j0 + sg_j0_wgu);
 }
