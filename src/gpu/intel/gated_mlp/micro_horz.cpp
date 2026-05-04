@@ -264,9 +264,6 @@ status_t micro_horz_t::pd_t::init_microkernels(
     problem_wgu.B.setAlignment(gemmstone::microkernel::alignmentForLD(
             std::min(alignment(W_gate_mdw), alignment(W_up_mdw))));
 
-    problem_wgu.A.tileC = uint16_t(config.unroll_m_gwu * config.wg_m_gwu);
-    problem_wgu.A.tileR = uint16_t(sg_size(engine));
-
     bool wgu_common_scales
             = with_quantize_common(attr()->scales_, DNNL_ARG_WEIGHTS_GATE);
     bool wgu_common_zp
@@ -313,10 +310,6 @@ status_t micro_horz_t::pd_t::init_microkernels(
     reqs_wgu.push_back(gemmstone::StrategyRequirement::WGN == config.wg_n_gwu);
 
     gemmstone::microkernel::GEMMOptions opts_wgu;
-    //opts_wgu.addToC = true;
-    //opts_wgu.localB = true;
-    //opts_wgu.slmPtr = true;
-
     opts_wgu.scaleB = with_wts_gate_scales(this) && !wgu_common_scales;
     opts_wgu.offsetB = with_wts_gate_zp(this);
 
