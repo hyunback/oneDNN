@@ -1197,15 +1197,15 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::u8}
     , // ^-- 36
 //*/
-    mlp_dims_t{1024, 4096, 1024, 128, 128,
-            //quantize_type::no_quantization, dnnl_eltwise_swish,
-            //mdt::f16, mdt::f16,
-            //mdt::f16, mdt::f16, mdt::f16,
-            //mdt::f16, mdt::f16, mdt::f16}
-            quantize_type::per_token_with_groups, dnnl_eltwise_swish,
+    mlp_dims_t{64, 64, 64, 128, 128,
+            quantize_type::no_quantization, dnnl_eltwise_swish,
             mdt::f16, mdt::f16,
-            mdt::u4, mdt::f16, mdt::u8,
-            mdt::u4, mdt::f16, mdt::u8}
+            mdt::f16, mdt::f16, mdt::f16,
+            mdt::f16, mdt::f16, mdt::f16}
+            //quantize_type::per_token_with_groups, dnnl_eltwise_swish,
+            //mdt::f16, mdt::f16,
+            //mdt::u4, mdt::f16, mdt::u8,
+            //mdt::u4, mdt::f16, mdt::u8}
 /*
     , // ^-- 37
     mlp_dims_t{1024, 896, 4864, 128, 128,

@@ -26,10 +26,6 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define DIV_UP(x, y) (((x) + (y) - 1) / (y))
 
-#define sg_per_wg (ugemm_wgu_sg_per_wg_m * ugemm_wgu_sg_per_wg_n)
-#define wgu_tile_sg_n DIV_UP(ugemm_wgu_wg_tile_n, sg_per_wg)
-#define wgu_tile_sg_m DIV_UP(ugemm_wgu_wg_tile_m, sg_per_wg)
-
 typedef ugemm_wgu_c_type s_tile_type;
 
 #ifdef SRC_DT_F16
@@ -66,17 +62,14 @@ typedef ugemm_wgu_c_type s_tile_type;
 #error "Unknown activation function defined"
 #endif
 
-DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE,
-        ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
-        ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1)
+#define BR ugemm_wgu_c_type_block0
+#define BC ugemm_wgu_c_type_block1
+#define NBR ugemm_wgu_c_type_nblock0
+#define NBC ugemm_wgu_c_type_nblock1
 
-DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type, SUBGROUP_SIZE,
-        ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
-        ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1,
-        s_tile_type_dst, SUBGROUP_SIZE,
-        ugemm_wgu_c_type_block0, ugemm_wgu_c_type_block1,
-        ugemm_wgu_c_type_nblock0, ugemm_wgu_c_type_nblock1,
-        CONVERT_DATA_T)
+DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE, BR, BC, NBR, NBC)
+DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type, SUBGROUP_SIZE, BR, BC, NBR, NBC,
+        s_tile_type_dst, SUBGROUP_SIZE, BR, BC, NBR, NBC, CONVERT_DATA_T)
 
 __attribute__((intel_reqd_sub_group_size(SUBGROUP_SIZE))) __kernel void
 micro_gated_mlp_horz(const __global SRC_DATA_T *src,
@@ -91,26 +84,16 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         const __global WTS_DOWN_ATTR_SCALES_DATA_T *wts_down_scales,
         const __global WTS_DOWN_ATTR_ZP_DATA_T *wts_down_zp) {
 
+    uint wg_i0 = get_group_id(2) * ugemm_wgu_wg_tile_m; // OC
+    uint wg_j0 = get_group_id(0) * ugemm_wgu_wg_tile_n; // MB
+
     uint sg_ij = sub_group_broadcast(get_local_id(1), 0);
-
-    uint wg_i0 = get_group_id(0) * ugemm_wgu_wg_tile_m; // MB
-    uint wg_j0 = get_group_id(2) * ugemm_wgu_wg_tile_n; // OC
-
-#if WTS_GATE_SCALES == QUANTIZE_COMMON
-    float wg_scale = convert_float(*wts_gate_scales);
-#endif
-#if WTS_UP_SCALES == QUANTIZE_COMMON
-    float wu_scale = convert_float(*wts_up_scales);
-#endif
 
     uint sg_i_wgu = sg_ij % ugemm_wgu_sg_per_wg_m;
     uint sg_j_wgu = sg_ij / ugemm_wgu_sg_per_wg_m;
 
-    uint sg_i0_wgu = sg_i_wgu * ugemm_wgu_sg_tile_m;
-    uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_n;
-
     s_tile_type S_WU_tile = ugemm_wgu(W_up, W_UP_S1, src, SRC_S0,
-            MB, OC, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
+            OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
 #if WTS_UP_SCALES == QUANTIZE_2D
             ,
             wts_up_scales
@@ -126,12 +109,13 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     );
 #if WTS_UP_SCALES == QUANTIZE_COMMON
 #define wu_scale_op(x) ((x) * wu_scale)
+    float wu_scale = convert_float(*wts_up_scales);
     tile_elementwise(S_WU_tile, wu_scale_op);
 #endif
 
 #ifndef UGEMM_UP_ONLY
     s_tile_type S_WG_tile = ugemm_wgu(W_gate, W_GATE_S1, src, SRC_S0,
-            MB, OC, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
+            OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
 #if WTS_GATE_SCALES == QUANTIZE_2D
             ,
             wts_gate_scales
@@ -147,6 +131,7 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     );
 #if WTS_GATE_SCALES == QUANTIZE_COMMON
 #define wg_scale_op(x) unary_activation((x) * wg_scale)
+    float wg_scale = convert_float(*wts_gate_scales);
     tile_elementwise(S_WG_tile, wg_scale_op);
 #else
     tile_elementwise(S_WG_tile, unary_activation);
@@ -154,8 +139,11 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     tile_binary(S_WU_tile, S_WG_tile, binary_mul);
 #endif // UGEMM_UP_ONLY
 
+    uint sg_i0_wgu = sg_i_wgu * ugemm_wgu_sg_tile_m;
+    uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_n;
+
     s_tile_type_dst S_tile_dst;
     tile_copy_reblock(S_WU_tile, &S_tile_dst);
-    tile_store(S_tile_dst, tmp_reduce_mem, MB, OC, INTER_S0,
+    tile_store(S_tile_dst, tmp_reduce_mem, OC, MB, INTER_S0,
             wg_i0 + sg_i0_wgu, wg_j0 + sg_j0_wgu);
 }

@@ -294,8 +294,8 @@ status_t micro_horz_t::pd_t::init_microkernels(
 
     /* Set up transposed problem size */
     gemmstone::SizeParams sizes;
-    sizes.m = MB();
-    sizes.n = OC();
+    sizes.m = OC();
+    sizes.n = MB();
     sizes.k = IC();
     sizes.batch = 1;
 
@@ -517,8 +517,8 @@ status_t micro_horz_t::execute(const exec_ctx_t &ctx) const {
 
     auto &gemm_gate_up_pkg = pd()->gemm_gate_up_pkg();
 
-    auto wg_tile_MB = gemm_gate_up_pkg.getSetting("wg_tile_m");
-    auto wg_tile_OC = gemm_gate_up_pkg.getSetting("wg_tile_n");
+    auto wg_tile_m = gemm_gate_up_pkg.getSetting("wg_tile_m");
+    auto wg_tile_n = gemm_gate_up_pkg.getSetting("wg_tile_n");
     auto sg_per_wg = gemm_gate_up_pkg.getSetting("sg_per_wg_m")
             * gemm_gate_up_pkg.getSetting("sg_per_wg_n");
 
@@ -550,8 +550,8 @@ status_t micro_horz_t::execute(const exec_ctx_t &ctx) const {
     compute::range_t lws = {(size_t)sg_size(engine), (size_t)sg_per_wg, 1};
     compute::range_t gws = lws;
 
-    gws[0] *= utils::div_up(MB, wg_tile_MB);
-    gws[2] *= utils::div_up(OC, wg_tile_OC);
+    gws[0] *= utils::div_up(MB, wg_tile_n);
+    gws[2] *= utils::div_up(OC, wg_tile_m);
 
     auto nd_range = compute::nd_range_t(gws, lws);
     CHECK(parallel_for(ctx, nd_range, gemm_gate_up_, arg_list));
