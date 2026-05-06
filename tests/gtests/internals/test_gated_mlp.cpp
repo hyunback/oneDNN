@@ -21,6 +21,7 @@
 
 #include <oneapi/dnnl/dnnl.hpp>
 #include <oneapi/dnnl/dnnl_graph.hpp>
+#include <type_traits>
 
 #include <cassert>
 #include <random>
@@ -32,15 +33,15 @@
 #include "common/gated_mlp_iface.hpp"
 
 // uncomment to dump cpu memory buffers
-#define ENABLE_PRINT_MEM
+//#define ENABLE_PRINT_MEM
 
 // uncomment to disable everything except Up
-#define ENABLE_UP_ONLY
+//#define ENABLE_UP_ONLY
 
 namespace dnnl {
 namespace impl {
 
-static bool verbose = false; // enable for debug
+static bool verbose = true; // enable for debug
 static const int min_runs = 4;
 
 using tag = memory::format_tag;
@@ -175,6 +176,56 @@ std::string PrintToString(const ::testing::TestParamInfo<mlp_dims_t> &info) {
     std::stringstream ss;
     ss << info.param;
     return ss.str();
+}
+
+template <typename T>
+bool maybe_read_from_file(
+        std::vector<T> &v, size_t exp_size, const std::string &suffix) {
+    auto maybe_path = ::getenv("BUFFER_READ_PREFIX");
+    if (!maybe_path) return false;
+    std::string path(maybe_path);
+    path += "." + suffix + ".bin";
+
+    FILE *file = nullptr;
+#ifdef _WIN32
+    if (::fopen_s(&file, path.c_str(), "rb")) file = nullptr;
+#else
+    file = ::fopen(path.c_str(), "rb");
+#endif
+    if (!file) return false;
+    ::fseek(file, 0, SEEK_END);
+    size_t total = 0, size = ::ftell(file);
+    if (exp_size * sizeof(v[0]) != size) {
+        ::fclose(file);
+        return false;
+    }
+    v.resize(exp_size);
+    ::fseek(file, 0, SEEK_SET);
+    for (size_t read = ~0; read && (total < size); total += read)
+        read = ::fread((uint8_t *)v.data() + total, 1, size - total, file);
+    ::fclose(file);
+    return (total == size);
+}
+
+template <typename T>
+bool maybe_write_to_file(std::vector<T> &v, const std::string &suffix) {
+    auto maybe_path = ::getenv("BUFFER_WRITE_PREFIX");
+    if (!maybe_path) return false;
+    std::string path(maybe_path);
+    path += "." + suffix + ".bin";
+
+    FILE *file = nullptr;
+#ifdef _WIN32
+    if (::fopen_s(&file, path.c_str(), "wb")) file = nullptr;
+#else
+    file = ::fopen(path.c_str(), "wb");
+#endif
+    if (!file) return false;
+    size_t total = 0, size = v.size() * sizeof(v[0]);
+    for (size_t write = ~0; write && (total < size); total += write)
+        write = ::fwrite((uint8_t *)v.data() + total, 1, size - total, file);
+    ::fclose(file);
+    return (total == size);
 }
 
 gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
@@ -380,7 +431,7 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
         fill_random(w_gate_data, w_gate_md, -1.f, 1.f);
 
         fill_random(w_up_data, w_up_md, -1.f, 1.f);
-        //fill_hceye(w_up_data, p.ic, 1.f); for (int i = 0; i < p.ic; i++) w_up_data[i] = 1.f;
+        //fill_hceye(w_up_data, p.ic, 1.f); //for (int i = 0; i < p.ic; i++) w_up_data[i] = 1.f;
         //fill_const(w_up_data, 0.f);
         //w_up_data[p.ic * 0 + 0] = 10.f;
         //w_up_data[p.ic * 0 + 1] =  0.f;
@@ -401,22 +452,43 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
 
         fill_random(w_down_data, w_down_md, -1.f, 1.f);
     } else {
-        fill_random_quantized(w_gate_quantized_data, w_gate_qnt_md,
-                (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
+        if (!maybe_read_from_file(
+                    w_gate_quantized_data, product(W_gate_sz), "gate_q")) {
+            fill_random_quantized(w_gate_quantized_data, w_gate_qnt_md,
+                    (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
+            maybe_write_to_file(w_gate_quantized_data, "gate_q");
+        }
+        if (!maybe_read_from_file(
+                    w_up_quantized_data, product(W_up_sz), "up_q")) {
+            fill_random_quantized(w_up_quantized_data, w_up_qnt_md,
+                    (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
+            //fill_hceye(w_up_quantized_data, p.ic, 1.f);
+            //for (int i = 0; i < p.ic; i++) w_up_quantized_data[i] = 1.f;
+            maybe_write_to_file(w_up_quantized_data, "up_q");
+        }
+        if (!maybe_read_from_file(
+                    w_down_quantized_data, product(W_down_sz), "down_q")) {
+            fill_random_quantized(w_down_quantized_data, w_down_qnt_md,
+                    (wd_wt == mdt::u4 || wd_wt == mdt::u8));
+            maybe_write_to_file(w_down_quantized_data, "down_q");
+        }
 
-        fill_random_quantized(w_up_quantized_data, w_up_qnt_md,
-                (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
-        //fill_hceye(w_up_quantized_data, p.ic, 1.f); for (int i = 0; i < p.ic; i++) w_up_quantized_data[i] = 1.f;
-
-        fill_random_quantized(w_down_quantized_data, w_down_qnt_md,
-                (wd_wt == mdt::u4 || wd_wt == mdt::u8));
-
-        fill_random_scales(w_gate_scales_data, w_gate_scales_md);
-
-        fill_random_scales(w_up_scales_data, w_up_scales_md);
-        //fill_const(w_up_scales_data, 1.f); for (int i = 0; i < p.oc; i++) w_up_scales_data[i] = 0.f;
-
-        fill_random_scales(w_down_scales_data, w_down_scales_md);
+        if (!maybe_read_from_file(
+                    w_gate_scales_data, product(quant_gateup_sz), "gate_s")) {
+            fill_random_scales(w_gate_scales_data, w_gate_scales_md);
+            maybe_write_to_file(w_gate_scales_data, "gate_s");
+        }
+        if (!maybe_read_from_file(
+                    w_up_scales_data, product(quant_gateup_sz), "up_s")) {
+            fill_random_scales(w_up_scales_data, w_up_scales_md);
+            //fill_const(w_up_scales_data, 1.f); for (int i = 0; i < p.oc; i++) w_up_scales_data[i] = 0.f;
+            maybe_write_to_file(w_up_scales_data, "up_s");
+        }
+        if (!maybe_read_from_file(
+                    w_down_scales_data, product(quant_down_sz), "down_s")) {
+            fill_random_scales(w_down_scales_data, w_down_scales_md);
+            maybe_write_to_file(w_down_scales_data, "down_s");
+        }
 
         bool wgu_zp_unsigned = (wgu_zp_dt == mdt::u4 || wgu_zp_dt == mdt::u8);
         if (verbose) {
@@ -425,18 +497,31 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
             else
                 printf("signed gateup quant init\n");
         }
-        fill_random_quantized(w_gate_zp_data, w_gate_zp_md, wgu_zp_unsigned);
+        if (!maybe_read_from_file(
+                    w_gate_zp_data, product(quant_gateup_sz), "gate_z")) {
+            fill_random_quantized(
+                    w_gate_zp_data, w_gate_zp_md, wgu_zp_unsigned);
+            maybe_write_to_file(w_gate_zp_data, "gate_z");
+        }
+        if (!maybe_read_from_file(
+                    w_up_zp_data, product(quant_gateup_sz), "up_z")) {
+            fill_random_quantized(w_up_zp_data, w_up_zp_md, wgu_zp_unsigned);
+            //fill_const(w_up_zp_data, 0.f);
+            maybe_write_to_file(w_up_zp_data, "up_z");
+        }
+        if (!maybe_read_from_file(w_gate_data, product(W_gate_sz), "gate")) {
+            w_gate_data = dequantize(w_gate_quantized_data, w_gate_md,
+                    w_gate_scales_md, w_gate_zp_data, w_gate_scales_data,
+                    wgu_group_size, p.qtype, out.wgu_groups, 0);
+            maybe_write_to_file(w_gate_data, "gate");
+        }
 
-        fill_random_quantized(w_up_zp_data, w_up_zp_md, wgu_zp_unsigned);
-        //fill_const(w_up_zp_data, 0.f);
-
-        w_gate_data = dequantize(w_gate_quantized_data, w_gate_md,
-                w_gate_scales_md, w_gate_zp_data, w_gate_scales_data,
-                wgu_group_size, p.qtype, out.wgu_groups, 0);
-
-        w_up_data = dequantize(w_up_quantized_data, w_up_md, w_up_scales_md,
-                w_up_zp_data, w_up_scales_data, wgu_group_size, p.qtype,
-                out.wgu_groups, 0);
+        if (!maybe_read_from_file(w_up_data, product(W_up_sz), "up")) {
+            w_up_data = dequantize(w_up_quantized_data, w_up_md, w_up_scales_md,
+                    w_up_zp_data, w_up_scales_data, wgu_group_size, p.qtype,
+                    out.wgu_groups, 0);
+            maybe_write_to_file(w_up_data, "up");
+        }
 
         bool wd_zp_unsigned = (wd_zp_dt == mdt::u4 || wd_zp_dt == mdt::u8);
         if (verbose) {
@@ -445,11 +530,18 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
             else
                 printf("signed down quant init\n");
         }
-        fill_random_quantized(w_down_zp_data, w_down_zp_md, wd_zp_unsigned);
+        if (!maybe_read_from_file(
+                    w_down_zp_data, product(quant_down_sz), "down_z")) {
+            fill_random_quantized(w_down_zp_data, w_down_zp_md, wd_zp_unsigned);
+            maybe_write_to_file(w_down_zp_data, "down_z");
+        }
 
-        w_down_data = dequantize(w_down_quantized_data, w_down_md,
-                w_down_scales_md, w_down_zp_data, w_down_scales_data,
-                wd_group_size, p.qtype, out.wd_groups, 0);
+        if (!maybe_read_from_file(w_down_data, product(W_down_sz), "down")) {
+            w_down_data = dequantize(w_down_quantized_data, w_down_md,
+                    w_down_scales_md, w_down_zp_data, w_down_scales_data,
+                    wd_group_size, p.qtype, out.wd_groups, 0);
+            maybe_write_to_file(w_down_data, "down");
+        }
     }
 
     // Write data to tensor object's handle.
@@ -627,16 +719,14 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
         std::cout << "primitive runs: " << runs + 1 << "; ";
         std::cout << "avg_time: " << avg_time << " ms" << std::endl;
     }
-    if (verbose && product(FC_down_md.get_dims()) < (64 * 64) + 1) {
-        const memory::dims FC_down_sz = {p.mb, p.ic};
+    if (verbose && product(FC_gate_md.get_dims()) < (64 * 64) + 1) {
         printf("resprim----------[%d %d]\n", int(p.mb), int(p.ic));
         printf("------inpA\n");
         print_mem(m_O_proj, "-prim");
         printf("------inpB\n");
         print_mem(m_W_gate, "-prim");
     }
-    if (verbose && product(FC_down_md.get_dims()) < (64 * 64) + 1) {
-        const memory::dims FC_down_sz = {p.mb, p.ic};
+    if (verbose && product(FC_gate_md.get_dims()) < (64 * 64) + 1) {
         printf("------tmpres\n");
         print_mem(m_FC_down, "-prim");
     }
@@ -757,6 +847,7 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
                             {DNNL_ARG_WEIGHTS_UP, m_W_up_quant},
                             {DNNL_ARG_WEIGHTS_DOWN, m_W_down_quant},
                             {DNNL_ARG_DST, m_FC_gate_t}});
+            if (print) strm.wait();
 #ifndef ENABLE_UP_ONLY
             PRINT_MEM(m_O_proj)
             PRINT_MEM(m_W_up_quant)
@@ -783,6 +874,7 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
                                     m_W_down_scales},
                             {DNNL_ARG_WEIGHTS_DOWN | DNNL_ARG_ATTR_ZERO_POINTS,
                                     m_W_down_zp}});
+            if (print) strm.wait();
 #ifndef ENABLE_UP_ONLY
             PRINT_MEM(m_O_proj)
             PRINT_MEM(m_W_up_quant)
@@ -839,7 +931,7 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
         std::cout << "internal gmlp primitive runs: " << runs + 1 << "; ";
         std::cout << "avg_time: " << avg_time << " ms" << std::endl;
     }
-    if (verbose && product(FC_down_md.get_dims()) < (64 * 64) + 1) {
+    if (verbose && product(FC_gate_md.get_dims()) < (64 * 64) + 1) {
         printf("resint----------[%d %d]\n", int(p.mb), int(p.ic));
         printf("------inpA\n");
         print_mem(m_O_proj, "-internal");
@@ -892,9 +984,60 @@ public:
 #endif
         SKIP_IF(engine::get_count(engine::kind::gpu) == 0,
                 "GMLP tests require gpus.");
-        p = GetParam();
         eng = engine(engine::kind::gpu, 0);
         strm = stream(eng);
+
+        auto maybe_test = ::getenv("GMLP_TEST");
+        try {
+            auto get_type = [](const std::string &tmp) {
+                switch (std::stoi(tmp)) {
+                    default: return mdt::undef;
+                    case 16: return mdt::f16;
+                    case -16: return mdt::bf16;
+                    case 8: return mdt::u8;
+                    case -8: return mdt::s8;
+                    case 4: return mdt::u4;
+                    case -4: return mdt::s4;
+                }
+            };
+            if (!maybe_test) throw std::exception();
+            p.gateup_group_size = p.down_group_size = 1;
+            p.qtype = quantize_type::no_quantization;
+            p.activation = dnnl_eltwise_swish;
+            p.src_dt = p.dst_dt = mdt::f16;
+            p.wgu_wt = p.wgu_s_dt = p.wgu_zp_dt = mdt::f16;
+            p.wd_wt = p.wd_s_dt = p.wd_zp_dt = mdt::f16;
+
+            std::stringstream ss(maybe_test);
+            std::string tmp;
+            if (!getline(ss, tmp, ' ')) throw std::exception();
+            p.mb = std::stoi(tmp);
+            if (!getline(ss, tmp, ' ')) throw std::exception();
+            p.ic = std::stoi(tmp);
+            if (!getline(ss, tmp, ' ')) throw std::exception();
+            p.oc = std::stoi(tmp);
+            if (getline(ss, tmp, ' ')) p.src_dt = p.dst_dt = get_type(tmp);
+            if (getline(ss, tmp, ' ')) p.wgu_wt = p.wd_wt = get_type(tmp);
+            if (getline(ss, tmp, ' '))
+                p.qtype = (std::stoi(tmp) > 0)
+                        ? quantize_type::per_token_with_groups
+                        : quantize_type::no_quantization;
+            if (getline(ss, tmp, ' '))
+                p.gateup_group_size = p.down_group_size = std::stoi(tmp);
+            if (getline(ss, tmp, ' ')) p.wgu_s_dt = p.wd_s_dt = get_type(tmp);
+            if (getline(ss, tmp, ' ')) p.wgu_zp_dt = p.wd_zp_dt = get_type(tmp);
+
+            printf("GMLP_TEST: (%ld x %ld x %ld, %s x %s, q = %d, gs = %d, "
+                   "s = %s, zp = %s)\n",
+                    p.mb, p.ic, p.oc,
+                    dnnl_dt2str(memory::convert_to_c(p.src_dt)),
+                    dnnl_dt2str(memory::convert_to_c(p.wgu_wt)),
+                    p.qtype != quantize_type::no_quantization,
+                    p.gateup_group_size,
+                    dnnl_dt2str(memory::convert_to_c(p.wgu_s_dt)),
+                    dnnl_dt2str(memory::convert_to_c(p.wgu_zp_dt)));
+        } catch (...) { maybe_test = nullptr; }
+        if (!maybe_test) p = GetParam();
         t = get_descriptors(eng, strm, p);
     }
 
@@ -927,7 +1070,7 @@ TEST_P(mlp_test_t, compare) {
     }
     int n_mismatches = 0, n_matches = 0;
     if (verbose) printf("resih.size() %zu\n", resih.size());
-    float max_diff = 0.0f, max_val, max_gold;
+    float max_diff = 0.0f, max_val = -INFINITY, max_gold = -INFINITY;
     for (int i = 0; i < int(resih.size()); ++i) {
         float abs_diff = std::abs(resih[i] - resph[i]);
         float rel_diff = std::abs((resih[i] - resph[i]) / resih[i]);
@@ -1197,15 +1340,15 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::u4, mdt::f16, mdt::u8}
     , // ^-- 36
 //*/
-    mlp_dims_t{64, 64, 64, 128, 128,
-            quantize_type::no_quantization, dnnl_eltwise_swish,
-            mdt::f16, mdt::f16,
-            mdt::f16, mdt::f16, mdt::f16,
-            mdt::f16, mdt::f16, mdt::f16}
-            //quantize_type::per_token_with_groups, dnnl_eltwise_swish,
+    mlp_dims_t{1024, 4096, 27392, 128, 128,
+            //quantize_type::no_quantization, dnnl_eltwise_swish,
             //mdt::f16, mdt::f16,
-            //mdt::u4, mdt::f16, mdt::u8,
-            //mdt::u4, mdt::f16, mdt::u8}
+            //mdt::f16, mdt::f16, mdt::f16,
+            //mdt::f16, mdt::f16, mdt::f16}
+            quantize_type::per_token_with_groups, dnnl_eltwise_swish,
+            mdt::f16, mdt::f16,
+            mdt::u4, mdt::f16, mdt::u8,
+            mdt::u4, mdt::f16, mdt::u8}
 /*
     , // ^-- 37
     mlp_dims_t{1024, 896, 4864, 128, 128,

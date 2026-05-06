@@ -31,7 +31,7 @@ namespace gpu {
 namespace intel {
 namespace gated_mlp {
 
-#define UGEMM_UP_ONLY
+//#define UGEMM_UP_ONLY
 
 namespace {
 
