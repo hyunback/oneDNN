@@ -54,7 +54,7 @@ struct gated_mlp_config_t {
 //gated_mlp_config_t xehpg_h32 = {16, 16,  8, 8};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1};
 //gated_mlp_config_t xehpg_h32 = { 8,  8,  4, 4};
-gated_mlp_config_t xehpg_h32 = {16, 64,  8, 2};
+gated_mlp_config_t xehpg_h32 = {32, 64,  8, 4};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1}; // big K
 //gated_mlp_config_t xehpg_h32 = {32, 32,  1, 1};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 32, 2};
@@ -206,6 +206,7 @@ status_t micro_horz_t::pd_t::init_microkernels(
     }
     config = xehpg_h32; // TODO
 
+#ifdef DNNL_DEV_MODE
     auto gmlp_conf = gpu_utils::dev_getenv("GMLP_CONF", std::string());
     if (!gmlp_conf.empty()) {
         std::vector<int> tokens;
@@ -224,6 +225,7 @@ status_t micro_horz_t::pd_t::init_microkernels(
         printf("GMLP_CONF: (%d %d %d %d)\n", config.unroll_m_gwu,
                 config.unroll_n_gwu, config.wg_m_gwu, config.wg_n_gwu);
     }
+#endif
 
     gemmstone::microkernel::HWInformation hw_info;
     hw_info.euCount = dev_info->eu_count();

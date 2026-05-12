@@ -987,7 +987,7 @@ public:
         eng = engine(engine::kind::gpu, 0);
         strm = stream(eng);
 
-        auto maybe_test = ::getenv("GMLP_TEST");
+        char *maybe_test = nullptr;
         try {
             auto get_type = [](const std::string &tmp) {
                 switch (std::stoi(tmp)) {
@@ -1000,6 +1000,7 @@ public:
                     case -4: return mdt::s4;
                 }
             };
+            maybe_test = ::getenv("GMLP_TEST");
             if (!maybe_test) throw std::exception();
             p.gateup_group_size = p.down_group_size = 1;
             p.qtype = quantize_type::no_quantization;
