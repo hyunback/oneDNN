@@ -112,14 +112,11 @@ struct mlp_dims_t {
 
 struct gmlp_tensors_t {
     memory m_x, m_w_gate, m_w_up, m_w_down;
-    memory m_w_gate_quantized, m_w_up_quantized, m_w_down_quantized;
     memory m_w_gate_scales, m_w_up_scales, m_w_down_scales;
     memory m_w_gate_zp, m_w_up_zp, m_w_down_zp;
-    memory m_out, m_out_quantized;
     memory m_fc_gate, m_fc_up, m_fc_down;
     memory m_fc_retn_t;
 
-    primitive_attr gateup_attr_quantized, down_attr_quantized;
     memory::dims wgu_groups, wd_groups;
 };
 
@@ -240,7 +237,7 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     const memory::dims FC_up_sz = {p.mb, p.oc};
     const memory::dims FC_down_sz = {p.mb, p.ic};
 
-    const memory::dims quant_gateup_sz = [&]() {
+    const memory::dims gateup_sz = [&]() {
         switch (p.qtype) {
             case quantize_type::no_quantization: return memory::dims {1, 1};
             case quantize_type::per_token_with_groups:
@@ -252,7 +249,7 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
             default: return memory::dims {0, 0};
         }
     }();
-    const memory::dims quant_down_sz = [&]() {
+    const memory::dims down_sz = [&]() {
         switch (p.qtype) {
             case quantize_type::no_quantization: return memory::dims {1, 1};
             case quantize_type::per_token_with_groups:
@@ -308,35 +305,25 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     // clang-format off
     auto x_md = memory::desc(O_proj_sz, src_dt, tag::ab);
 
-    auto w_gate_md = memory::desc(W_gate_sz, mdt::f16, tag::ba);
-    auto w_up_md   = memory::desc(W_up_sz,   mdt::f16, tag::ba);
-    auto w_down_md = memory::desc(W_down_sz, mdt::f16, tag::ba);
+    auto w_gate_md = memory::desc(W_gate_sz, wgu_wt, tag::ba);
+    auto w_up_md   = memory::desc(W_up_sz,   wgu_wt, tag::ba);
+    auto w_down_md = memory::desc(W_down_sz,  wd_wt, tag::ba);
 
-    auto w_gate_qnt_md = memory::desc(W_gate_sz, wgu_wt, tag::ba);
-    auto w_up_qnt_md   = memory::desc(W_up_sz,   wgu_wt, tag::ba);
-    auto w_down_qnt_md = memory::desc(W_down_sz,  wd_wt, tag::ba);
+    auto w_gate_scales_md = memory::desc(gateup_sz, wgu_s_dt, tag::ab);
+    auto w_up_scales_md   = memory::desc(gateup_sz, wgu_s_dt, tag::ab);
+    auto w_down_scales_md = memory::desc(down_sz,    wd_s_dt, tag::ab);
 
-    auto w_gate_scales_md = memory::desc(quant_gateup_sz, wgu_s_dt, tag::ab);
-    auto w_up_scales_md   = memory::desc(quant_gateup_sz, wgu_s_dt, tag::ab);
-    auto w_down_scales_md = memory::desc(quant_down_sz,    wd_s_dt, tag::ab);
-
-    auto w_gate_zp_md = memory::desc(quant_gateup_sz, wgu_zp_dt, tag::ab);
-    auto w_up_zp_md   = memory::desc(quant_gateup_sz, wgu_zp_dt, tag::ab);
-    auto w_down_zp_md = memory::desc(quant_down_sz,    wd_zp_dt, tag::ab);
-
-    auto output_md     = memory::desc(FC_down_sz, dst_dt, tag::ab);
-    auto output_qnt_md = memory::desc(FC_down_sz, dst_dt, tag::ab);
+    auto w_gate_zp_md = memory::desc(gateup_sz, wgu_zp_dt, tag::ab);
+    auto w_up_zp_md   = memory::desc(gateup_sz, wgu_zp_dt, tag::ab);
+    auto w_down_zp_md = memory::desc(down_sz,    wd_zp_dt, tag::ab);
     // clang-format on
 
     // Create memory objects
     out.m_x = memory(x_md, eng);
+
     out.m_w_gate = memory(w_gate_md, eng);
     out.m_w_up = memory(w_up_md, eng);
     out.m_w_down = memory(w_down_md, eng);
-
-    out.m_w_gate_quantized = memory(w_gate_qnt_md, eng);
-    out.m_w_up_quantized = memory(w_up_qnt_md, eng);
-    out.m_w_down_quantized = memory(w_down_qnt_md, eng);
 
     out.m_w_gate_scales = memory(w_gate_scales_md, eng);
     out.m_w_up_scales = memory(w_up_scales_md, eng);
@@ -350,20 +337,14 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
     out.m_fc_up = memory(FC_up_md, eng);
     out.m_fc_down = memory(FC_down_md, eng);
 
-    out.m_out = memory(output_md, eng);
-    out.m_out_quantized = memory(output_qnt_md, eng);
-
     out.m_fc_retn_t = memory(FC_retn_md_t, eng);
 
     // Allocate user data.
     std::vector<float> x_data(product(O_proj_sz));
-    std::vector<float> w_gate_data(product(W_gate_sz));
-    std::vector<float> w_up_data(product(W_up_sz));
-    std::vector<float> w_down_data(product(W_down_sz));
 
-    std::vector<float> w_gate_quantized_data(product(W_gate_sz), 1.f);
-    std::vector<float> w_up_quantized_data(product(W_up_sz), 1.f);
-    std::vector<float> w_down_quantized_data(product(W_down_sz), 1.f);
+    std::vector<float> w_gate_data(product(W_gate_sz), 1.f);
+    std::vector<float> w_up_data(product(W_up_sz), 1.f);
+    std::vector<float> w_down_data(product(W_down_sz), 1.f);
 
     std::vector<float> w_gate_scales_data(
             product(out.m_w_gate_scales.get_desc().get_padded_dims()), 1.f);
@@ -398,97 +379,24 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
         default: break;
     }
 
-    int wgu_group_size = p.gateup_group_size;
-    int wd_group_size = p.down_group_size;
-
-    //if (p.qtype == quantize_type::per_tensor) {
-    //    wgu_group_size = W_gate_sz[0] * W_gate_sz[1];
-    //    wd_group_size = W_down_sz[0] * W_down_sz[1];
-    //}
-
     fill_random(x_data, x_md, -.25f, .25f);
-    //fill_lin(x_data, .1f);
-    //fill_const(x_data, 0.f);
-    //x_data[p.ic * 0 + 0] =  1.f;
-    //x_data[p.ic * 1 + 0] =  5.f;
-    //x_data[p.ic * 2 + 0] =  9.f;
-    //x_data[p.ic * 3 + 0] = 13.f;
-    //x_data[p.ic * 0 + 1] =  2.f;
-    //x_data[p.ic * 1 + 1] =  6.f;
-    //x_data[p.ic * 2 + 1] = 10.f;
-    //x_data[p.ic * 3 + 1] = 14.f;
-    //x_data[p.ic * 0 + 2] =  3.f;
-    //x_data[p.ic * 1 + 2] =  7.f;
-    //x_data[p.ic * 2 + 2] = 11.f;
-    //x_data[p.ic * 3 + 2] = 15.f;
-    //x_data[p.ic * 0 + 3] =  4.f;
-    //x_data[p.ic * 1 + 3] =  8.f;
-    //x_data[p.ic * 2 + 3] = 12.f;
-    //x_data[p.ic * 3 + 3] = 16.f;
 
     if (p.qtype == quantize_type::no_quantization) {
         if (verbose) printf("no quant init\n");
         fill_random(w_gate_data, w_gate_md, -1.f, 1.f);
-
         fill_random(w_up_data, w_up_md, -1.f, 1.f);
-        //fill_hceye(w_up_data, p.ic, 1.f); //for (int i = 0; i < p.ic; i++) w_up_data[i] = 1.f;
-        //fill_const(w_up_data, 0.f);
-        //w_up_data[p.ic * 0 + 0] = 10.f;
-        //w_up_data[p.ic * 0 + 1] =  0.f;
-        //w_up_data[p.ic * 0 + 2] =  0.f;
-        //w_up_data[p.ic * 0 + 3] =  0.f;
-        //w_up_data[p.ic * 1 + 0] = 10.f;
-        //w_up_data[p.ic * 1 + 1] =  1.f;
-        //w_up_data[p.ic * 1 + 2] =  0.f;
-        //w_up_data[p.ic * 1 + 3] =  0.f;
-        //w_up_data[p.ic * 2 + 0] = 10.f;
-        //w_up_data[p.ic * 2 + 1] =  0.f;
-        //w_up_data[p.ic * 2 + 2] =  1.f;
-        //w_up_data[p.ic * 2 + 3] =  0.f;
-        //w_up_data[p.ic * 3 + 0] = 10.f;
-        //w_up_data[p.ic * 3 + 1] =  0.f;
-        //w_up_data[p.ic * 3 + 2] =  0.f;
-        //w_up_data[p.ic * 3 + 3] =  1.f;
-
         fill_random(w_down_data, w_down_md, -1.f, 1.f);
     } else {
-        if (!maybe_read_from_file(
-                    w_gate_quantized_data, product(W_gate_sz), "gate_q")) {
-            fill_random_quantized(w_gate_quantized_data, w_gate_qnt_md,
-                    (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
-            maybe_write_to_file(w_gate_quantized_data, "gate_q");
-        }
-        if (!maybe_read_from_file(
-                    w_up_quantized_data, product(W_up_sz), "up_q")) {
-            fill_random_quantized(w_up_quantized_data, w_up_qnt_md,
-                    (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
-            //fill_hceye(w_up_quantized_data, p.ic, 1.f);
-            //for (int i = 0; i < p.ic; i++) w_up_quantized_data[i] = 1.f;
-            maybe_write_to_file(w_up_quantized_data, "up_q");
-        }
-        if (!maybe_read_from_file(
-                    w_down_quantized_data, product(W_down_sz), "down_q")) {
-            fill_random_quantized(w_down_quantized_data, w_down_qnt_md,
-                    (wd_wt == mdt::u4 || wd_wt == mdt::u8));
-            maybe_write_to_file(w_down_quantized_data, "down_q");
-        }
+        fill_random_quantized(w_gate_data, w_gate_md,
+                (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
+        fill_random_quantized(
+                w_up_data, w_up_md, (wgu_wt == mdt::u4 || wgu_wt == mdt::u8));
+        fill_random_quantized(
+                w_down_data, w_down_md, (wd_wt == mdt::u4 || wd_wt == mdt::u8));
 
-        if (!maybe_read_from_file(
-                    w_gate_scales_data, product(quant_gateup_sz), "gate_s")) {
-            fill_random_scales(w_gate_scales_data, w_gate_scales_md);
-            maybe_write_to_file(w_gate_scales_data, "gate_s");
-        }
-        if (!maybe_read_from_file(
-                    w_up_scales_data, product(quant_gateup_sz), "up_s")) {
-            fill_random_scales(w_up_scales_data, w_up_scales_md);
-            //fill_const(w_up_scales_data, 1.f); for (int i = 0; i < p.oc; i++) w_up_scales_data[i] = 0.f;
-            maybe_write_to_file(w_up_scales_data, "up_s");
-        }
-        if (!maybe_read_from_file(
-                    w_down_scales_data, product(quant_down_sz), "down_s")) {
-            fill_random_scales(w_down_scales_data, w_down_scales_md);
-            maybe_write_to_file(w_down_scales_data, "down_s");
-        }
+        fill_random_scales(w_gate_scales_data, w_gate_scales_md);
+        fill_random_scales(w_up_scales_data, w_up_scales_md);
+        fill_random_scales(w_down_scales_data, w_down_scales_md);
 
         bool wgu_zp_unsigned = (wgu_zp_dt == mdt::u4 || wgu_zp_dt == mdt::u8);
         if (verbose) {
@@ -497,31 +405,8 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
             else
                 printf("signed gateup quant init\n");
         }
-        if (!maybe_read_from_file(
-                    w_gate_zp_data, product(quant_gateup_sz), "gate_z")) {
-            fill_random_quantized(
-                    w_gate_zp_data, w_gate_zp_md, wgu_zp_unsigned);
-            maybe_write_to_file(w_gate_zp_data, "gate_z");
-        }
-        if (!maybe_read_from_file(
-                    w_up_zp_data, product(quant_gateup_sz), "up_z")) {
-            fill_random_quantized(w_up_zp_data, w_up_zp_md, wgu_zp_unsigned);
-            //fill_const(w_up_zp_data, 0.f);
-            maybe_write_to_file(w_up_zp_data, "up_z");
-        }
-        if (!maybe_read_from_file(w_gate_data, product(W_gate_sz), "gate")) {
-            w_gate_data = dequantize(w_gate_quantized_data, w_gate_md,
-                    w_gate_scales_md, w_gate_zp_data, w_gate_scales_data,
-                    wgu_group_size, p.qtype, out.wgu_groups, 0);
-            maybe_write_to_file(w_gate_data, "gate");
-        }
-
-        if (!maybe_read_from_file(w_up_data, product(W_up_sz), "up")) {
-            w_up_data = dequantize(w_up_quantized_data, w_up_md, w_up_scales_md,
-                    w_up_zp_data, w_up_scales_data, wgu_group_size, p.qtype,
-                    out.wgu_groups, 0);
-            maybe_write_to_file(w_up_data, "up");
-        }
+        fill_random_quantized(w_gate_zp_data, w_gate_zp_md, wgu_zp_unsigned);
+        fill_random_quantized(w_up_zp_data, w_up_zp_md, wgu_zp_unsigned);
 
         bool wd_zp_unsigned = (wd_zp_dt == mdt::u4 || wd_zp_dt == mdt::u8);
         if (verbose) {
@@ -530,40 +415,17 @@ gmlp_tensors_t get_descriptors(engine &eng, stream &strm, mlp_dims_t p) {
             else
                 printf("signed down quant init\n");
         }
-        if (!maybe_read_from_file(
-                    w_down_zp_data, product(quant_down_sz), "down_z")) {
-            fill_random_quantized(w_down_zp_data, w_down_zp_md, wd_zp_unsigned);
-            maybe_write_to_file(w_down_zp_data, "down_z");
-        }
-
-        if (!maybe_read_from_file(w_down_data, product(W_down_sz), "down")) {
-            w_down_data = dequantize(w_down_quantized_data, w_down_md,
-                    w_down_scales_md, w_down_zp_data, w_down_scales_data,
-                    wd_group_size, p.qtype, out.wd_groups, 0);
-            maybe_write_to_file(w_down_data, "down");
-        }
+        fill_random_quantized(w_down_zp_data, w_down_zp_md, wd_zp_unsigned);
     }
 
     // Write data to tensor object's handle.
     write_to_dnnl_memory(x_data.data(), out.m_x, eng, strm);
+
     write_to_dnnl_memory(w_gate_data.data(), out.m_w_gate, eng, strm);
     write_to_dnnl_memory(w_up_data.data(), out.m_w_up, eng, strm);
     write_to_dnnl_memory(w_down_data.data(), out.m_w_down, eng, strm);
 
-    if (p.qtype == quantize_type::no_quantization) {
-        write_to_dnnl_memory(
-                w_gate_data.data(), out.m_w_gate_quantized, eng, strm);
-        write_to_dnnl_memory(w_up_data.data(), out.m_w_up_quantized, eng, strm);
-        write_to_dnnl_memory(
-                w_down_data.data(), out.m_w_down_quantized, eng, strm);
-    } else {
-        write_to_dnnl_memory(w_gate_quantized_data.data(),
-                out.m_w_gate_quantized, eng, strm);
-        write_to_dnnl_memory(
-                w_up_quantized_data.data(), out.m_w_up_quantized, eng, strm);
-        write_to_dnnl_memory(w_down_quantized_data.data(),
-                out.m_w_down_quantized, eng, strm);
-
+    if (p.qtype != quantize_type::no_quantization) {
         write_to_dnnl_memory(w_gate_zp_data.data(), out.m_w_gate_zp, eng, strm);
         write_to_dnnl_memory(w_up_zp_data.data(), out.m_w_up_zp, eng, strm);
         write_to_dnnl_memory(w_down_zp_data.data(), out.m_w_down_zp, eng, strm);
@@ -591,45 +453,77 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
 
     // extract memory objects
     auto m_O_proj = t.m_x;
-    auto m_W_gate = t.m_w_gate;
-    auto m_W_up = t.m_w_up;
-    auto m_W_down = t.m_w_down;
     auto m_FC_gate = t.m_fc_gate;
     auto m_FC_up = t.m_fc_up;
     auto m_FC_down = t.m_fc_down;
 
-    // extract memory descriptors
     auto O_proj_md = t.m_x.get_desc();
-    auto W_gate_md = t.m_w_gate.get_desc();
-    auto W_up_md = t.m_w_up.get_desc();
-    auto W_down_md = t.m_w_down.get_desc();
     auto FC_gate_md = t.m_fc_gate.get_desc();
     auto FC_up_md = t.m_fc_up.get_desc();
     auto FC_down_md = t.m_fc_down.get_desc();
 
+    auto m_W_gate = t.m_w_gate;
+    auto m_W_gate_scales = t.m_w_gate_scales;
+    auto m_W_gate_zp = t.m_w_gate_zp;
+    auto m_W_up = t.m_w_up;
+    auto m_W_up_scales = t.m_w_up_scales;
+    auto m_W_up_zp = t.m_w_up_zp;
+    auto m_W_down = t.m_w_down;
+    auto m_W_down_scales = t.m_w_down_scales;
+    auto m_W_down_zp = t.m_w_down_zp;
+
+    auto m_W_gate_md = t.m_w_gate.get_desc();
+    auto m_W_gate_scales_md = t.m_w_gate_scales.get_desc();
+    auto m_W_gate_zp_md = t.m_w_gate_zp.get_desc();
+    auto m_W_up_md = t.m_w_up.get_desc();
+    auto m_W_up_scales_md = t.m_w_up_scales.get_desc();
+    auto m_W_up_zp_md = t.m_w_up_zp.get_desc();
+    auto m_W_down_md = t.m_w_down.get_desc();
+    auto m_W_down_scales_md = t.m_w_down_scales.get_desc();
+    auto m_W_down_zp_md = t.m_w_down_zp.get_desc();
+
     auto m_FC_retn_t = t.m_fc_retn_t;
 
-    auto gen_default_attr = [](quantize_type qtype) {
+    auto gen_default_attr = [&](int idx) {
         primitive_attr attr;
-        switch (qtype) {
+        if (p.qtype == quantize_type::no_quantization) return attr;
+        int mask = (p.qtype == quantize_type::per_token_with_groups)
+                ? (1 << 0) + (1 << 1)
+                : 0;
+        switch (idx) {
             default: break;
-            case quantize_type::per_token_with_groups:
-            case quantize_type::per_tensor:
-                attr.set_fpmath_mode(
-                        static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+            case DNNL_ARG_WEIGHTS_UP:
+                attr.set_scales(DNNL_ARG_WEIGHTS, mask, t.wgu_groups,
+                        m_W_up_scales_md.get_data_type());
+                attr.set_zero_points(DNNL_ARG_WEIGHTS, mask, t.wgu_groups,
+                        m_W_up_zp_md.get_data_type());
+                break;
+            case DNNL_ARG_WEIGHTS_GATE:
+                attr.set_scales(DNNL_ARG_WEIGHTS, mask, t.wgu_groups,
+                        m_W_gate_scales_md.get_data_type());
+                attr.set_zero_points(DNNL_ARG_WEIGHTS, mask, t.wgu_groups,
+                        m_W_gate_zp_md.get_data_type());
+                break;
+            case DNNL_ARG_WEIGHTS_DOWN:
+                attr.set_scales(DNNL_ARG_WEIGHTS, mask, t.wd_groups,
+                        m_W_down_scales_md.get_data_type());
+                attr.set_zero_points(DNNL_ARG_WEIGHTS, mask, t.wd_groups,
+                        m_W_down_zp_md.get_data_type());
                 break;
         }
+        attr.set_fpmath_mode(
+                static_cast<enum fpmath_mode>(fpmath_mode::any), true);
         return attr;
     };
 
     // fc_up
-    auto bmm0_pd = matmul::primitive_desc(
-            eng, O_proj_md, W_up_md, FC_up_md, gen_default_attr(p.qtype));
+    auto bmm0_pd = matmul::primitive_desc(eng, O_proj_md, m_W_up_md, FC_up_md,
+            gen_default_attr(DNNL_ARG_WEIGHTS_UP));
     auto bmm0_prim = matmul(bmm0_pd);
 
 #ifndef ENABLE_UP_ONLY
     // fc_gate -> swish -> mul
-    auto bmm1_attr = gen_default_attr(p.qtype);
+    auto bmm1_attr = gen_default_attr(DNNL_ARG_WEIGHTS_GATE);
     post_ops bmm1_po;
     if (p.activation == dnnl_eltwise_swish) {
         bmm1_po.append_eltwise(algorithm::eltwise_swish, 1.f, 1.f);
@@ -642,11 +536,11 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
     bmm1_attr.set_post_ops(bmm1_po);
 
     auto bmm1_pd = matmul::primitive_desc(
-            eng, O_proj_md, W_gate_md, FC_gate_md, bmm1_attr);
+            eng, O_proj_md, m_W_gate_md, FC_gate_md, bmm1_attr);
     auto bmm1_prim = matmul(bmm1_pd);
 
-    auto bmm2_pd = matmul::primitive_desc(
-            eng, FC_gate_md, W_down_md, FC_down_md, gen_default_attr(p.qtype));
+    auto bmm2_pd = matmul::primitive_desc(eng, FC_gate_md, m_W_down_md,
+            FC_down_md, gen_default_attr(DNNL_ARG_WEIGHTS_DOWN));
     auto bmm2_prim = matmul(bmm2_pd);
 #endif
 
@@ -657,31 +551,77 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
 #else
 #define PRINT_MEM(mem)
 #endif
-        bmm0_prim.execute(strm,
-                {{DNNL_ARG_SRC, m_O_proj}, {DNNL_ARG_WEIGHTS, m_W_up},
-                        {DNNL_ARG_DST, m_FC_up}});
+        if (p.qtype == quantize_type::no_quantization) {
+            bmm0_prim.execute(strm,
+                    {{DNNL_ARG_SRC, m_O_proj}, {DNNL_ARG_WEIGHTS, m_W_up},
+                            {DNNL_ARG_DST, m_FC_up}});
 #ifndef ENABLE_UP_ONLY
-        bmm1_prim.execute(strm,
-                {{DNNL_ARG_SRC, m_O_proj}, {DNNL_ARG_WEIGHTS, m_W_gate},
-                        {DNNL_ARG_DST, m_FC_gate},
-                        {DNNL_ARG_ATTR_MULTIPLE_POST_OP(1) | DNNL_ARG_SRC_1,
-                                m_FC_up}});
+            bmm1_prim.execute(strm,
+                    {{DNNL_ARG_SRC, m_O_proj}, {DNNL_ARG_WEIGHTS, m_W_gate},
+                            {DNNL_ARG_DST, m_FC_gate},
+                            {DNNL_ARG_ATTR_MULTIPLE_POST_OP(1) | DNNL_ARG_SRC_1,
+                                    m_FC_up}});
 
-        bmm2_prim.execute(strm,
-                {{DNNL_ARG_SRC, m_FC_gate}, {DNNL_ARG_WEIGHTS, m_W_down},
-                        {DNNL_ARG_DST, m_FC_down}});
+            bmm2_prim.execute(strm,
+                    {{DNNL_ARG_SRC, m_FC_gate}, {DNNL_ARG_WEIGHTS, m_W_down},
+                            {DNNL_ARG_DST, m_FC_down}});
 #endif
-        PRINT_MEM(m_O_proj)
-        PRINT_MEM(m_W_up)
+            PRINT_MEM(m_O_proj)
+            PRINT_MEM(m_W_up)
 #ifndef ENABLE_UP_ONLY
-        PRINT_MEM(m_W_gate)
-        PRINT_MEM(m_W_down)
+            PRINT_MEM(m_W_gate)
+            PRINT_MEM(m_W_down)
 #endif
-        PRINT_MEM(m_FC_up)
+            PRINT_MEM(m_FC_up)
 #ifndef ENABLE_UP_ONLY
-        PRINT_MEM(m_FC_gate)
-        PRINT_MEM(m_FC_down)
+            PRINT_MEM(m_FC_gate)
+            PRINT_MEM(m_FC_down)
 #endif
+        } else {
+            bmm0_prim.execute(strm,
+                    {{DNNL_ARG_SRC, m_O_proj}, {DNNL_ARG_WEIGHTS, m_W_up},
+                            {DNNL_ARG_WEIGHTS | DNNL_ARG_ATTR_SCALES,
+                                    m_W_up_scales},
+                            {DNNL_ARG_WEIGHTS | DNNL_ARG_ATTR_ZERO_POINTS,
+                                    m_W_up_zp},
+                            {DNNL_ARG_DST, m_FC_up}});
+#ifndef ENABLE_UP_ONLY
+            bmm1_prim.execute(strm,
+                    {{DNNL_ARG_SRC, m_O_proj}, {DNNL_ARG_WEIGHTS, m_W_gate},
+                            {DNNL_ARG_WEIGHTS | DNNL_ARG_ATTR_SCALES,
+                                    m_W_gate_scales},
+                            {DNNL_ARG_WEIGHTS | DNNL_ARG_ATTR_ZERO_POINTS,
+                                    m_W_gate_zp},
+                            {DNNL_ARG_DST, m_FC_gate},
+                            {DNNL_ARG_ATTR_MULTIPLE_POST_OP(1) | DNNL_ARG_SRC_1,
+                                    m_FC_up}});
+
+            bmm2_prim.execute(strm,
+                    {{DNNL_ARG_SRC, m_FC_gate}, {DNNL_ARG_WEIGHTS, m_W_down},
+                            {DNNL_ARG_WEIGHTS | DNNL_ARG_ATTR_SCALES,
+                                    m_W_down_scales},
+                            {DNNL_ARG_WEIGHTS | DNNL_ARG_ATTR_ZERO_POINTS,
+                                    m_W_down_zp},
+                            {DNNL_ARG_DST, m_FC_down}});
+#endif
+            PRINT_MEM(m_O_proj)
+            PRINT_MEM(m_W_up)
+            PRINT_MEM(m_W_up_scales)
+            PRINT_MEM(m_W_up_zp)
+#ifndef ENABLE_UP_ONLY
+            PRINT_MEM(m_W_gate)
+            PRINT_MEM(m_W_gate_scales)
+            PRINT_MEM(m_W_gate_zp)
+            PRINT_MEM(m_W_down)
+            PRINT_MEM(m_W_down_scales)
+            PRINT_MEM(m_W_down_zp)
+#endif
+            PRINT_MEM(m_FC_up)
+#ifndef ENABLE_UP_ONLY
+            PRINT_MEM(m_FC_gate)
+            PRINT_MEM(m_FC_down)
+#endif
+        }
 #undef PRINT_MEM
     };
 
@@ -719,17 +659,6 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
         std::cout << "primitive runs: " << runs + 1 << "; ";
         std::cout << "avg_time: " << avg_time << " ms" << std::endl;
     }
-    if (verbose && product(FC_gate_md.get_dims()) < (64 * 64) + 1) {
-        printf("resprim----------[%d %d]\n", int(p.mb), int(p.ic));
-        printf("------inpA\n");
-        print_mem(m_O_proj, "-prim");
-        printf("------inpB\n");
-        print_mem(m_W_gate, "-prim");
-    }
-    if (verbose && product(FC_gate_md.get_dims()) < (64 * 64) + 1) {
-        printf("------tmpres\n");
-        print_mem(m_FC_down, "-prim");
-    }
 
 #ifndef ENABLE_UP_ONLY
     res.resize(product(m_FC_down.get_desc().get_dims()));
@@ -748,39 +677,33 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
 
     // Create memory objects
     auto m_O_proj = t.m_x;
-    auto m_W_gate = t.m_w_gate;
-    auto m_W_up = t.m_w_up;
-    auto m_W_down = t.m_w_down;
     auto m_FC_gate = t.m_fc_gate;
     auto m_FC_up = t.m_fc_up;
     auto m_FC_down = t.m_fc_down;
 
     auto O_proj_md = t.m_x.get_desc();
-    auto W_gate_md = t.m_w_gate.get_desc();
-    auto W_up_md = t.m_w_up.get_desc();
-    auto W_down_md = t.m_w_down.get_desc();
     auto FC_gate_md = t.m_fc_gate.get_desc();
     auto FC_up_md = t.m_fc_up.get_desc();
     auto FC_down_md = t.m_fc_down.get_desc();
 
     // quantization memory
-    auto m_W_gate_quant = t.m_w_gate_quantized;
+    auto m_W_gate = t.m_w_gate;
     auto m_W_gate_scales = t.m_w_gate_scales;
     auto m_W_gate_zp = t.m_w_gate_zp;
-    auto m_W_up_quant = t.m_w_up_quantized;
+    auto m_W_up = t.m_w_up;
     auto m_W_up_scales = t.m_w_up_scales;
     auto m_W_up_zp = t.m_w_up_zp;
-    auto m_W_down_quant = t.m_w_down_quantized;
+    auto m_W_down = t.m_w_down;
     auto m_W_down_scales = t.m_w_down_scales;
     auto m_W_down_zp = t.m_w_down_zp;
 
-    auto m_W_gate_quant_md = t.m_w_gate_quantized.get_desc();
+    auto m_W_gate_md = t.m_w_gate.get_desc();
     auto m_W_gate_scales_md = t.m_w_gate_scales.get_desc();
     auto m_W_gate_zp_md = t.m_w_gate_zp.get_desc();
-    auto m_W_up_quant_md = t.m_w_up_quantized.get_desc();
+    auto m_W_up_md = t.m_w_up.get_desc();
     auto m_W_up_scales_md = t.m_w_up_scales.get_desc();
     auto m_W_up_zp_md = t.m_w_up_zp.get_desc();
-    auto m_W_down_quant_md = t.m_w_down_quantized.get_desc();
+    auto m_W_down_md = t.m_w_down.get_desc();
     auto m_W_down_scales_md = t.m_w_down_scales.get_desc();
     auto m_W_down_zp_md = t.m_w_down_zp.get_desc();
 
@@ -827,8 +750,8 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
         //activation = dnnl_alg_kind_t::dnnl_eltwise_gelu_erf;
         //activation = dnnl_alg_kind_t::dnnl_eltwise_gelu_tanh;
         //activation = dnnl_alg_kind_t::dnnl_eltwise_exp; // should fail
-        return gmlp_t::pd_t(eng, O_proj_md, m_W_gate_quant_md, m_W_up_quant_md,
-                m_W_down_quant_md, FC_retn_md_t, activation, attr);
+        return gmlp_t::pd_t(eng, O_proj_md, m_W_gate_md, m_W_up_md, m_W_down_md,
+                FC_retn_md_t, activation, attr);
     }();
 
     auto prim_fused_internal = gmlp_t(gmlp_pd);
@@ -843,24 +766,24 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
         if (p.qtype == quantize_type::no_quantization) {
             prim_fused_internal.execute(strm,
                     {{DNNL_ARG_SRC, m_O_proj},
-                            {DNNL_ARG_WEIGHTS_GATE, m_W_gate_quant},
-                            {DNNL_ARG_WEIGHTS_UP, m_W_up_quant},
-                            {DNNL_ARG_WEIGHTS_DOWN, m_W_down_quant},
+                            {DNNL_ARG_WEIGHTS_GATE, m_W_gate},
+                            {DNNL_ARG_WEIGHTS_UP, m_W_up},
+                            {DNNL_ARG_WEIGHTS_DOWN, m_W_down},
                             {DNNL_ARG_DST, m_FC_gate_t}});
             if (print) strm.wait();
 #ifndef ENABLE_UP_ONLY
             PRINT_MEM(m_O_proj)
-            PRINT_MEM(m_W_up_quant)
-            PRINT_MEM(m_W_gate_quant)
-            PRINT_MEM(m_W_down_quant)
+            PRINT_MEM(m_W_up)
+            PRINT_MEM(m_W_gate)
+            PRINT_MEM(m_W_down)
 #endif
             PRINT_MEM(m_FC_gate_t)
         } else {
             prim_fused_internal.execute(strm,
                     {{DNNL_ARG_SRC, m_O_proj},
-                            {DNNL_ARG_WEIGHTS_GATE, m_W_gate_quant},
-                            {DNNL_ARG_WEIGHTS_UP, m_W_up_quant},
-                            {DNNL_ARG_WEIGHTS_DOWN, m_W_down_quant},
+                            {DNNL_ARG_WEIGHTS_GATE, m_W_gate},
+                            {DNNL_ARG_WEIGHTS_UP, m_W_up},
+                            {DNNL_ARG_WEIGHTS_DOWN, m_W_down},
                             {DNNL_ARG_DST, m_FC_gate_t},
                             {DNNL_ARG_WEIGHTS_GATE | DNNL_ARG_ATTR_SCALES,
                                     m_W_gate_scales},
@@ -877,9 +800,9 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
             if (print) strm.wait();
 #ifndef ENABLE_UP_ONLY
             PRINT_MEM(m_O_proj)
-            PRINT_MEM(m_W_up_quant)
-            PRINT_MEM(m_W_gate_quant)
-            PRINT_MEM(m_W_down_quant)
+            PRINT_MEM(m_W_up)
+            PRINT_MEM(m_W_gate)
+            PRINT_MEM(m_W_down)
             PRINT_MEM(m_W_up_scales)
             PRINT_MEM(m_W_up_zp)
             PRINT_MEM(m_W_gate_scales)
@@ -887,7 +810,7 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
             PRINT_MEM(m_W_down_scales)
             PRINT_MEM(m_W_down_zp)
 #else
-            PRINT_MEM(m_W_up_quant)
+            PRINT_MEM(m_W_up)
             PRINT_MEM(m_W_up_scales)
             PRINT_MEM(m_W_up_zp)
 #endif
@@ -930,15 +853,6 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
     if (verbose) {
         std::cout << "internal gmlp primitive runs: " << runs + 1 << "; ";
         std::cout << "avg_time: " << avg_time << " ms" << std::endl;
-    }
-    if (verbose && product(FC_gate_md.get_dims()) < (64 * 64) + 1) {
-        printf("resint----------[%d %d]\n", int(p.mb), int(p.ic));
-        printf("------inpA\n");
-        print_mem(m_O_proj, "-internal");
-        printf("------inpB\n");
-        print_mem(m_W_gate, "-internal");
-        printf("------tmpres\n");
-        print_mem(m_FC_gate_t, "-internal");
     }
 
     res.resize(product(m_FC_gate_t.get_desc().get_dims()));
