@@ -240,11 +240,8 @@ status_t micro_horz_t::pd_t::init_microkernels(
             arg_md(DNNL_ARG_WEIGHTS_GATE)->data_type);
     problem.Tb_ext = gemm::jit::convert_dnnl_to_kernel_type(
             arg_md(DNNL_ARG_SRC)->data_type);
-    problem.Tc_ext
-            = gemm::jit::convert_dnnl_to_kernel_type(inter_md->data_type);
     problem.Ta = problem.Tb = get_ab_type(problem.Tb_ext, problem.Ta_ext);
-    problem.Tc = gemmstone::Type::f32;
-    problem.Ts = problem.Tc;
+    problem.Ts = problem.Tc = problem.Tc_ext = gemmstone::Type::f32;
 
     VCONDCHECK(primitive, create, check, gated_mlp,
             (problem.Ta != gemmstone::Type::invalid)
@@ -314,6 +311,7 @@ status_t micro_horz_t::pd_t::init_microkernels(
     gemmstone::microkernel::GEMMOptions opts_wgu;
     opts_wgu.scaleA = with_wts_gate_scales(this) && !wgu_common_scales;
     opts_wgu.offsetA = with_wts_gate_zp(this);
+    opts_wgu.slmPtr = true;
 
     try {
         gemm_gate_up_pkg_
@@ -459,6 +457,8 @@ status_t micro_horz_t::init(impl::engine_t *engine) {
     kernel_ctx.define_int("UGEMM_UP_ONLY", 1);
 #endif
 
+    kernel_ctx.define_int(
+            "WITH_SLM", pd()->gemm_gate_up_pkg().getSetting("slm_size") > 0);
     kernel_ctx.define_int("SUBGROUP_SIZE", sg_size(engine));
 
     int tile_wgu_m = pd()->gemm_gate_up_pkg().getSetting("wg_tile_m");

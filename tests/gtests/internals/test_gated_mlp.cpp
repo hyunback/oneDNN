@@ -654,7 +654,7 @@ void bench_gated_mlp_primitives(std::vector<float> &res, double &avg_time,
     std::chrono::duration<double, std::milli> duration = end - start;
 
     // Display the results.
-    avg_time = (duration.count() - dur_first.count()) / runs;
+    avg_time = duration.count() / runs;
     if (verbose) {
         std::cout << "primitive runs: " << runs + 1 << "; ";
         std::cout << "avg_time: " << avg_time << " ms" << std::endl;
@@ -849,7 +849,7 @@ void bench_gated_mlp_internal(std::vector<float> &res, double &avg_time,
     std::chrono::duration<double, std::milli> duration = end - start;
 
     // Display the results.
-    avg_time = (duration.count() - dur_first.count()) / runs;
+    avg_time = duration.count() / runs;
     if (verbose) {
         std::cout << "internal gmlp primitive runs: " << runs + 1 << "; ";
         std::cout << "avg_time: " << avg_time << " ms" << std::endl;

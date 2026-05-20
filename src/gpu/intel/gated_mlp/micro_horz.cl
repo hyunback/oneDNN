@@ -84,6 +84,12 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         const __global WTS_DOWN_ATTR_SCALES_DATA_T *wts_down_scales,
         const __global WTS_DOWN_ATTR_ZP_DATA_T *wts_down_zp) {
 
+#if WITH_SLM
+    local char slm[ugemm_wgu_slm_size];
+#else
+    local char *slm = NULL;
+#endif
+
     uint wg_i0 = get_group_id(2) * ugemm_wgu_wg_tile_m; // OC
     uint wg_j0 = get_group_id(0) * ugemm_wgu_wg_tile_n; // MB
 
@@ -92,8 +98,8 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     uint sg_i_wgu = sg_ij % ugemm_wgu_sg_per_wg_m;
     uint sg_j_wgu = sg_ij / ugemm_wgu_sg_per_wg_m;
 
-    s_tile_type S_WU_tile = ugemm_wgu(W_up, W_UP_S1, src, SRC_S0,
-            OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
+    s_tile_type S_WU_tile = ugemm_wgu(W_up, W_UP_S1, src, SRC_S0, OC, MB, IC,
+            wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
 #if WTS_UP_SCALES == QUANTIZE_2D
             ,
             wts_up_scales
@@ -114,8 +120,8 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #endif
 
 #ifndef UGEMM_UP_ONLY
-    s_tile_type S_WG_tile = ugemm_wgu(W_gate, W_GATE_S1, src, SRC_S0,
-            OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu
+    s_tile_type S_WG_tile = ugemm_wgu(W_gate, W_GATE_S1, src, SRC_S0, OC, MB,
+            IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
 #if WTS_GATE_SCALES == QUANTIZE_2D
             ,
             wts_gate_scales
