@@ -71,6 +71,18 @@ DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE, BR, BC, NBR, NBC)
 DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type, SUBGROUP_SIZE, BR, BC, NBR, NBC,
         s_tile_type_dst, SUBGROUP_SIZE, BR, BC, NBR, NBC, CONVERT_DATA_T)
 
+#if (WTS_GATE_ELEMENTS_PER_BYTE > 1)
+#define AS_WTS_GATE_PTR(p) ((const global uchar *)(p))
+#else
+#define AS_WTS_GATE_PTR(p) (p)
+#endif
+
+#if (WTS_UP_ELEMENTS_PER_BYTE > 1)
+#define AS_WTS_UP_PTR(p) ((const global uchar *)(p))
+#else
+#define AS_WTS_UP_PTR(p) (p)
+#endif
+
 __attribute__((intel_reqd_sub_group_size(SUBGROUP_SIZE))) __kernel void
 micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         const __global WTS_GATE_DATA_T *W_gate,
@@ -98,8 +110,8 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     uint sg_i_wgu = sg_ij % ugemm_wgu_sg_per_wg_m;
     uint sg_j_wgu = sg_ij / ugemm_wgu_sg_per_wg_m;
 
-    s_tile_type S_WU_tile = ugemm_wgu(W_up, W_UP_S1, src, SRC_S0, OC, MB, IC,
-            wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
+    s_tile_type S_WU_tile = ugemm_wgu(AS_WTS_UP_PTR(W_up), W_UP_S1, src, SRC_S0,
+            OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
 #if WTS_UP_SCALES == QUANTIZE_2D
             ,
             wts_up_scales
@@ -120,8 +132,8 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #endif
 
 #ifndef UGEMM_UP_ONLY
-    s_tile_type S_WG_tile = ugemm_wgu(W_gate, W_GATE_S1, src, SRC_S0, OC, MB,
-            IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
+    s_tile_type S_WG_tile = ugemm_wgu(AS_WTS_GATE_PTR(W_gate), W_GATE_S1, src,
+            SRC_S0, OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
 #if WTS_GATE_SCALES == QUANTIZE_2D
             ,
             wts_gate_scales

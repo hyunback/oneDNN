@@ -111,8 +111,7 @@ data_type_t wts_down_zp_dt(const micro_horz_t::pd_t *pd) {
 dim_t wts_group_size(const micro_horz_t::pd_t *pd, int arg) {
     auto gs = pd->attr()->scales_.get_group(arg, 0);
     auto gz = pd->attr()->zero_points_.get_group(arg, 0);
-    gpu_assert(IMPLICATION(gs && gz, gs == gz));
-    return gs;
+    return ((gs <= 1) || (gz <= 1) || (gs == gz)) ? gs : -1;
 }
 dim_t wts_gate_group_size(const micro_horz_t::pd_t *pd) {
     return wts_group_size(pd, DNNL_ARG_WEIGHTS_GATE);
