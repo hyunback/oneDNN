@@ -1027,6 +1027,21 @@ TEST_P(mlp_test_t, compare) {
 
 // clang-format off
 INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
+    // Test case #12: LLaMA 3.1 8B FP16 no-quant
+    mlp_dims_t{1024, 4096, 14336, 1, 1,
+            quantize_type::no_quantization, dnnl_eltwise_swish,
+            mdt::f16, mdt::f16,
+            mdt::f16, mdt::f16, mdt::f16,
+            mdt::f16, mdt::f16, mdt::f16}
+    ,
+    // Test case: LLaMA 3.1 8B INT4-like shape for real-model debugging.
+    // Note: this parameterized harness shares gate/up quantization settings.
+    mlp_dims_t{1024, 4096, 14336, 64, 64,
+            quantize_type::per_token_with_groups, dnnl_eltwise_swish,
+            mdt::f16, mdt::f16,
+            mdt::u4, mdt::f16, mdt::u8,
+            mdt::u4, mdt::f16, mdt::u8}
+    ,
 /*
     // no quantization
     mlp_dims_t {64, 64, 64, 1, 1,
@@ -1351,6 +1366,449 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
 //*/
 ), &PrintToString);
 // clang-format on
+
+// === Dump-based test: loads real model data from binary files ===
+static bool load_binary_to_memory(const std::string &path, dnnl::memory &mem) {
+    FILE *f = ::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    ::fseek(f, 0, SEEK_END);
+    size_t file_size = ::ftell(f);
+    size_t mem_size = mem.get_desc().get_size();
+    if (file_size != mem_size) {
+        ::fprintf(stderr, "Size mismatch %s: file=%zu mem=%zu\n",
+                path.c_str(), file_size, mem_size);
+        ::fclose(f);
+        return false;
+    }
+    std::vector<uint8_t> buf(file_size);
+    ::fseek(f, 0, SEEK_SET);
+    size_t rd = ::fread(buf.data(), 1, file_size, f);
+    ::fclose(f);
+    if (rd != file_size) return false;
+    auto *ptr = static_cast<uint8_t *>(mem.map_data());
+    memcpy(ptr, buf.data(), file_size);
+    mem.unmap_data(ptr);
+    ::fprintf(stderr, "Loaded %s (%zu bytes)\n", path.c_str(), file_size);
+    return true;
+}
+
+TEST(mlp_dump_test, compare_from_dump_int4) {
+    const char *dump_dir_env = std::getenv("GMLP_DUMP_DIR");
+    if (!dump_dir_env) GTEST_SKIP() << "Set GMLP_DUMP_DIR=/tmp/gmlp_dump";
+    std::string dir(dump_dir_env);
+
+    SKIP_IF(engine::get_count(engine::kind::gpu) == 0, "Requires GPU");
+    // Use device index from GMLP_GPU_DEV env var (default: 0).
+    // e2e OpenVINO uses GPU.1 which may map to a different physical device.
+    // On BMG-03: dev 0 = Arc B580 (BMG), dev 1 = integrated GPU.
+    const char *dev_env = std::getenv("GMLP_GPU_DEV");
+    int dev_idx = dev_env ? std::atoi(dev_env) : 0;
+    engine eng(engine::kind::gpu, dev_idx);
+    stream strm(eng);
+
+    // LLaMA 3.1 8B INT4 layer 0 dimensions
+    const memory::dim mb = 1024, ic = 4096, oc = 14336;
+    const int gate_gs = 64, down_gs = 64;
+    const int gate_ngroups = ic / gate_gs;    // 64
+    const int down_ngroups = oc / down_gs;    // 224 (down IC=oc=14336, 14336/64=224)
+    // Note: down_ngroups = oc/down_gs is wrong. down weight IC = 14336 = oc in gmlp terms.
+    // Actually: down weight OpenVINO shape [OC_down=4096, IC_down=14336]
+    // In OpenVINO code: ifm = weight.get_dim(1) = 14336, ngroups = scale.get_dim(0) = 224
+    // group_size = 14336 / 224 = 64
+    const int actual_down_ngroups = 224; // 14336 / 64
+
+    // --- Memory descriptors ---
+    auto src_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+    auto dst_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+
+    // Weights: logical [IC, OC] with ba tag = physical [OC, IC]
+    auto wg_md = memory::desc({ic, oc}, mdt::u4, tag::ba);    // gate u4
+    auto wu_md = memory::desc({ic, oc}, mdt::u8, tag::ba);    // up u8
+    // Down: matmul A[mb,oc] × B[oc,ic] → C[mb,ic], B logical [oc,ic] ba = phys [ic,oc]=[4096,14336]
+    auto wd_md = memory::desc({oc, ic}, mdt::u4, tag::ba);
+
+    // Scales (already transposed in dump: [ngroups, OC])
+    auto sg_md = memory::desc({gate_ngroups, oc}, mdt::f16, tag::ab);       // [64, 14336]
+    auto su_md = memory::desc({1, oc}, mdt::f16, tag::ab);                  // [1, 14336]
+    auto sd_md = memory::desc({actual_down_ngroups, ic}, mdt::f16, tag::ab); // [224, 4096]
+
+    // Zero points
+    auto zg_md = memory::desc({gate_ngroups, oc}, mdt::u8, tag::ab);
+    auto zu_md = memory::desc({1, oc}, mdt::u8, tag::ab);
+    auto zd_md = memory::desc({actual_down_ngroups, ic}, mdt::u8, tag::ab);
+
+    // Intermediate buffers
+    auto fc_gate_md = memory::desc({mb, oc}, mdt::f16, tag::ab);
+    auto fc_up_md = memory::desc({mb, oc}, mdt::f32, tag::ab);
+
+    // --- Create memories ---
+    memory m_src(src_md, eng), m_dst_prim(dst_md, eng), m_dst_int(dst_md, eng);
+    memory m_wg(wg_md, eng), m_wu(wu_md, eng), m_wd(wd_md, eng);
+    memory m_sg(sg_md, eng), m_su(su_md, eng), m_sd(sd_md, eng);
+    memory m_zg(zg_md, eng), m_zu(zu_md, eng), m_zd(zd_md, eng);
+    memory m_fc_gate(fc_gate_md, eng), m_fc_up(fc_up_md, eng);
+
+    // --- Load from dump files ---
+    ASSERT_TRUE(load_binary_to_memory(dir + "/src.bin", m_src));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_gate.bin", m_wg));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_up.bin", m_wu));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_down.bin", m_wd));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/scale_gate.bin", m_sg));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/scale_up.bin", m_su));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/scale_down.bin", m_sd));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/zp_gate.bin", m_zg));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/zp_up.bin", m_zu));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/zp_down.bin", m_zd));
+
+    fprintf(stderr, "All dump files loaded from %s\n", dir.c_str());
+
+    // ========== Primitive reference path (3 separate matmuls) ==========
+    fprintf(stderr, "[PROGRESS] Creating up matmul primitive...\n");
+    // Up matmul: src[mb,ic] × w_up[ic,oc] → fc_up[mb,oc] (f32), per-channel scale
+    primitive_attr up_attr;
+    up_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    up_attr.set_scales(DNNL_ARG_WEIGHTS, 2, {}, mdt::f16);
+    up_attr.set_zero_points(DNNL_ARG_WEIGHTS, 2, {}, mdt::u8);
+    auto up_pd = matmul::primitive_desc(eng, src_md, wu_md, fc_up_md, up_attr);
+    auto up_prim = matmul(up_pd);
+    fprintf(stderr, "[PROGRESS] Up matmul created.\n");
+
+    fprintf(stderr, "[PROGRESS] Creating gate matmul primitive...\n");
+    // Gate matmul: src[mb,ic] × w_gate[ic,oc] → fc_gate[mb,oc] (f16) + swish + mul(fc_up)
+    primitive_attr gate_attr;
+    gate_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    gate_attr.set_scales(
+            DNNL_ARG_WEIGHTS, 3, {gate_gs, 1}, mdt::f16);
+    gate_attr.set_zero_points(
+            DNNL_ARG_WEIGHTS, 3, {gate_gs, 1}, mdt::u8);
+    post_ops gate_po;
+    gate_po.append_eltwise(algorithm::eltwise_swish, 1.f, 1.f);
+    gate_po.append_binary(algorithm::binary_mul, fc_up_md);
+    gate_attr.set_post_ops(gate_po);
+    auto gate_pd = matmul::primitive_desc(
+            eng, src_md, wg_md, fc_gate_md, gate_attr);
+    auto gate_prim = matmul(gate_pd);
+    fprintf(stderr, "[PROGRESS] Gate matmul created.\n");
+
+    fprintf(stderr, "[PROGRESS] Creating down matmul primitive...\n");
+    // Down matmul: fc_gate[mb,oc] × w_down[oc,ic] → dst[mb,ic] (f16)
+    primitive_attr down_attr;
+    down_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    down_attr.set_scales(
+            DNNL_ARG_WEIGHTS, 3, {down_gs, 1}, mdt::f16);
+    down_attr.set_zero_points(
+            DNNL_ARG_WEIGHTS, 3, {down_gs, 1}, mdt::u8);
+    auto down_pd = matmul::primitive_desc(
+            eng, fc_gate_md, wd_md, dst_md, down_attr);
+    auto down_prim = matmul(down_pd);
+    fprintf(stderr, "[PROGRESS] Down matmul created.\n");
+
+    // Execute primitive path
+    // Skip reference path if GMLP_SKIP_REF=1 to test if OOR is caused
+    // by memory pressure from reference matmul primitives.
+    const bool skip_ref = std::getenv("GMLP_SKIP_REF") != nullptr;
+    if (!skip_ref) {
+    fprintf(stderr, "[PROGRESS] Executing reference path (3 matmuls)...\n");
+    up_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS, m_wu},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, m_su},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, m_zu},
+                    {DNNL_ARG_DST, m_fc_up}});
+    gate_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS, m_wg},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, m_sg},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, m_zg},
+                    {DNNL_ARG_DST, m_fc_gate},
+                    {DNNL_ARG_ATTR_MULTIPLE_POST_OP(1) | DNNL_ARG_SRC_1,
+                            m_fc_up}});
+    down_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_fc_gate}, {DNNL_ARG_WEIGHTS, m_wd},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, m_sd},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, m_zd},
+                    {DNNL_ARG_DST, m_dst_prim}});
+    strm.wait();
+    fprintf(stderr, "[PROGRESS] Reference path done.\n");
+    } else {
+        fprintf(stderr, "[PROGRESS] Skipping reference path (GMLP_SKIP_REF=1).\n");
+    }
+
+    // ========== Internal gated_mlp path ==========
+    fprintf(stderr, "[PROGRESS] Creating gated_mlp primitive...\n");
+    primitive_attr gmlp_attr;
+    gmlp_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    // Use scratchpad:user mode to match OpenVINO e2e behavior.
+    // Without this, micro_horz_t hits CL_OUT_OF_RESOURCES (-5) on INT4,
+    // while e2e (which uses scratchpad:user) executes without OOR.
+    gmlp_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    // Gate: grouped
+    gmlp_attr.set_scales(
+            DNNL_ARG_WEIGHTS_GATE, 3, {gate_gs, 1}, mdt::f16);
+    gmlp_attr.set_zero_points(
+            DNNL_ARG_WEIGHTS_GATE, 3, {gate_gs, 1}, mdt::u8);
+    // Up: per-channel
+    gmlp_attr.set_scales(DNNL_ARG_WEIGHTS_UP, 2, {}, mdt::f16);
+    gmlp_attr.set_zero_points(DNNL_ARG_WEIGHTS_UP, 2, {}, mdt::u8);
+    // Down: grouped
+    gmlp_attr.set_scales(
+            DNNL_ARG_WEIGHTS_DOWN, 3, {down_gs, 1}, mdt::f16);
+    gmlp_attr.set_zero_points(
+            DNNL_ARG_WEIGHTS_DOWN, 3, {down_gs, 1}, mdt::u8);
+
+    auto gmlp_pd = gmlp_t::pd_t(eng, src_md, wg_md, wu_md, wd_md, dst_md,
+            dnnl_eltwise_swish, gmlp_attr);
+    auto gmlp_prim = gmlp_t(gmlp_pd);
+
+    // Allocate user-managed scratchpad
+    auto scratchpad_md = gmlp_pd.scratchpad_desc();
+    memory scratchpad_mem(scratchpad_md, eng);
+    fprintf(stderr, "[PROGRESS] gated_mlp primitive created (scratchpad: %zu bytes). Executing...\n",
+            scratchpad_md.get_size());
+
+    gmlp_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS_GATE, m_wg},
+                    {DNNL_ARG_WEIGHTS_UP, m_wu},
+                    {DNNL_ARG_WEIGHTS_DOWN, m_wd},
+                    {DNNL_ARG_DST, m_dst_int},
+                    {DNNL_ARG_SCRATCHPAD, scratchpad_mem},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_GATE, m_sg},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_GATE, m_zg},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_UP, m_su},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_UP, m_zu},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_DOWN, m_sd},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_DOWN,
+                            m_zd}});
+    strm.wait();
+
+    // ========== Compare results ==========
+    const size_t n_elems = mb * ic;
+    std::vector<float> res_prim(n_elems), res_int(n_elems);
+    move_data(eng, strm, res_prim, m_dst_prim, false);
+    move_data(eng, strm, res_int, m_dst_int, false);
+
+    int n_mismatches = 0;
+    float max_diff = 0.0f, max_val = 0.f, max_gold = 0.f;
+    for (size_t i = 0; i < n_elems; i++) {
+        float abs_diff = std::abs(res_int[i] - res_prim[i]);
+        float rel_diff = (res_prim[i] != 0)
+                ? abs_diff / std::abs(res_prim[i])
+                : abs_diff;
+        if (abs_diff > 1e-4 && rel_diff > 5e-2) {
+            if (n_mismatches < 10)
+                printf("mismatch @ %zu: internal=%f prim=%f\n", i,
+                        res_int[i], res_prim[i]);
+            if (abs_diff > max_diff) {
+                max_diff = abs_diff;
+                max_val = res_int[i];
+                max_gold = res_prim[i];
+            }
+            n_mismatches++;
+        }
+    }
+    int threshold = int(n_elems) * 0.0006;
+    printf("total mismatches: %d / %zu (threshold: %d), max_diff: %f (%f vs %f)\n",
+            n_mismatches, n_elems, threshold, max_diff, max_val, max_gold);
+    ASSERT_LE(n_mismatches, threshold);
+}
+
+// Same descriptor as compare_from_dump_int4 (up=u8 per-channel, gate/down=u4 grouped)
+// but with random data instead of real model weights.
+// This isolates whether CL_OUT_OF_RESOURCES is caused by the descriptor config
+// (u8 up + per-channel scales) or by specific data values from the dump.
+TEST(mlp_dump_test, random_data_int4_u8up) {
+    SKIP_IF(engine::get_count(engine::kind::gpu) == 0, "Requires GPU");
+    engine eng(engine::kind::gpu, 0);
+    stream strm(eng);
+
+    const memory::dim mb = 1024, ic = 4096, oc = 14336;
+    const int gate_gs = 64, down_gs = 64;
+    const int gate_ngroups = ic / gate_gs;
+    const int actual_down_ngroups = 224; // 14336 / 64
+
+    // Same descriptors as dump test: up=u8 per-channel, gate/down=u4 grouped
+    auto src_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+    auto dst_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+    auto wg_md = memory::desc({ic, oc}, mdt::u4, tag::ba);
+    auto wu_md = memory::desc({ic, oc}, mdt::u8, tag::ba);  // u8, NOT u4
+    auto wd_md = memory::desc({oc, ic}, mdt::u4, tag::ba);
+    auto sg_md = memory::desc({gate_ngroups, oc}, mdt::f16, tag::ab);
+    auto su_md = memory::desc({1, oc}, mdt::f16, tag::ab);   // per-channel
+    auto sd_md = memory::desc({actual_down_ngroups, ic}, mdt::f16, tag::ab);
+    auto zg_md = memory::desc({gate_ngroups, oc}, mdt::u8, tag::ab);
+    auto zu_md = memory::desc({1, oc}, mdt::u8, tag::ab);
+    auto zd_md = memory::desc({actual_down_ngroups, ic}, mdt::u8, tag::ab);
+
+    // Create memories (GPU-allocated, zero-initialized by default)
+    memory m_src(src_md, eng), m_dst(dst_md, eng);
+    memory m_wg(wg_md, eng), m_wu(wu_md, eng), m_wd(wd_md, eng);
+    memory m_sg(sg_md, eng), m_su(su_md, eng), m_sd(sd_md, eng);
+    memory m_zg(zg_md, eng), m_zu(zu_md, eng), m_zd(zd_md, eng);
+
+    // Fill with small random values via host vectors
+    auto fill_rand = [&](memory &mem, float lo, float hi) {
+        size_t sz = mem.get_desc().get_size();
+        std::vector<uint8_t> buf(sz);
+        std::mt19937 rng(42);
+        std::uniform_int_distribution<uint8_t> dist(0, 255);
+        for (auto &b : buf) b = dist(rng);
+        void *ptr = mem.map_data();
+        memcpy(ptr, buf.data(), sz);
+        mem.unmap_data(ptr);
+    };
+    fill_rand(m_src, -1, 1);
+    fill_rand(m_wg, 0, 1); fill_rand(m_wu, 0, 1); fill_rand(m_wd, 0, 1);
+    fill_rand(m_sg, 0, 1); fill_rand(m_su, 0, 1); fill_rand(m_sd, 0, 1);
+    fill_rand(m_zg, 0, 1); fill_rand(m_zu, 0, 1); fill_rand(m_zd, 0, 1);
+
+    // Create gated_mlp primitive with same attrs as dump test
+    primitive_attr gmlp_attr;
+    gmlp_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    gmlp_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    gmlp_attr.set_scales(DNNL_ARG_WEIGHTS_GATE, 3, {gate_gs, 1}, mdt::f16);
+    gmlp_attr.set_zero_points(DNNL_ARG_WEIGHTS_GATE, 3, {gate_gs, 1}, mdt::u8);
+    gmlp_attr.set_scales(DNNL_ARG_WEIGHTS_UP, 2, {}, mdt::f16);
+    gmlp_attr.set_zero_points(DNNL_ARG_WEIGHTS_UP, 2, {}, mdt::u8);
+    gmlp_attr.set_scales(DNNL_ARG_WEIGHTS_DOWN, 3, {down_gs, 1}, mdt::f16);
+    gmlp_attr.set_zero_points(DNNL_ARG_WEIGHTS_DOWN, 3, {down_gs, 1}, mdt::u8);
+
+    auto gmlp_pd = gmlp_t::pd_t(eng, src_md, wg_md, wu_md, wd_md, dst_md,
+            dnnl_eltwise_swish, gmlp_attr);
+    auto gmlp_prim = gmlp_t(gmlp_pd);
+
+    auto scratchpad_md = gmlp_pd.scratchpad_desc();
+    memory scratchpad_mem(scratchpad_md, eng);
+    fprintf(stderr, "[PROGRESS] random_data_int4_u8up: executing (scratchpad: %zu bytes)...\n",
+            scratchpad_md.get_size());
+
+    gmlp_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS_GATE, m_wg},
+                    {DNNL_ARG_WEIGHTS_UP, m_wu},
+                    {DNNL_ARG_WEIGHTS_DOWN, m_wd},
+                    {DNNL_ARG_DST, m_dst},
+                    {DNNL_ARG_SCRATCHPAD, scratchpad_mem},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_GATE, m_sg},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_GATE, m_zg},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_UP, m_su},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_UP, m_zu},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_DOWN, m_sd},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_DOWN, m_zd}});
+    strm.wait();
+    fprintf(stderr, "[PROGRESS] random_data_int4_u8up: done.\n");
+    // If we get here without CL_OUT_OF_RESOURCES, the descriptor is fine
+    // and the OOR in the dump test is data-dependent.
+}
+
+TEST(mlp_dump_test, compare_from_dump_fp16) {
+    const char *dump_dir_env = std::getenv("GMLP_DUMP_DIR_FP16");
+    if (!dump_dir_env)
+        GTEST_SKIP() << "Set GMLP_DUMP_DIR_FP16=/tmp/gmlp_fp16_dump_bin";
+    std::string dir(dump_dir_env);
+
+    SKIP_IF(engine::get_count(engine::kind::gpu) == 0, "Requires GPU");
+    engine eng(engine::kind::gpu, 0);
+    stream strm(eng);
+
+    // LLaMA 3.1 8B FP16 layer dimensions
+    const memory::dim mb = 1024, ic = 4096, oc = 14336;
+
+    auto src_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+    auto dst_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+
+    // Weights: logical [IC, OC] with ba tag = physical [OC, IC]
+    auto wg_md = memory::desc({ic, oc}, mdt::f16, tag::ba);
+    auto wu_md = memory::desc({ic, oc}, mdt::f16, tag::ba);
+    auto wd_md = memory::desc({oc, ic}, mdt::f16, tag::ba);
+
+    // Intermediate buffers
+    auto fc_gate_md = memory::desc({mb, oc}, mdt::f16, tag::ab);
+    auto fc_up_md = memory::desc({mb, oc}, mdt::f32, tag::ab);
+
+    memory m_src(src_md, eng), m_dst_prim(dst_md, eng), m_dst_int(dst_md, eng);
+    memory m_wg(wg_md, eng), m_wu(wu_md, eng), m_wd(wd_md, eng);
+    memory m_fc_gate(fc_gate_md, eng), m_fc_up(fc_up_md, eng);
+
+    ASSERT_TRUE(load_binary_to_memory(dir + "/src.bin", m_src));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_gate.bin", m_wg));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_up.bin", m_wu));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_down.bin", m_wd));
+
+    fprintf(stderr, "All FP16 dump files loaded from %s\n", dir.c_str());
+
+    // Primitive reference path (3 separate matmuls)
+    auto up_pd = matmul::primitive_desc(eng, src_md, wu_md, fc_up_md);
+    auto up_prim = matmul(up_pd);
+
+    primitive_attr gate_attr;
+    gate_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    post_ops gate_po;
+    gate_po.append_eltwise(algorithm::eltwise_swish, 1.f, 1.f);
+    gate_po.append_binary(algorithm::binary_mul, fc_up_md);
+    gate_attr.set_post_ops(gate_po);
+    auto gate_pd = matmul::primitive_desc(eng, src_md, wg_md, fc_gate_md, gate_attr);
+    auto gate_prim = matmul(gate_pd);
+
+    auto down_pd = matmul::primitive_desc(eng, fc_gate_md, wd_md, dst_md);
+    auto down_prim = matmul(down_pd);
+
+    up_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS, m_wu}, {DNNL_ARG_DST, m_fc_up}});
+    gate_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src},
+                    {DNNL_ARG_WEIGHTS, m_wg},
+                    {DNNL_ARG_DST, m_fc_gate},
+                    {DNNL_ARG_ATTR_MULTIPLE_POST_OP(1) | DNNL_ARG_SRC_1, m_fc_up}});
+    down_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_fc_gate}, {DNNL_ARG_WEIGHTS, m_wd}, {DNNL_ARG_DST, m_dst_prim}});
+    strm.wait();
+
+    primitive_attr gmlp_attr;
+    gmlp_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+
+    auto gmlp_pd = gmlp_t::pd_t(eng, src_md, wg_md, wu_md, wd_md, dst_md,
+            dnnl_eltwise_swish, gmlp_attr);
+    auto gmlp_prim = gmlp_t(gmlp_pd);
+
+    gmlp_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src},
+                    {DNNL_ARG_WEIGHTS_GATE, m_wg},
+                    {DNNL_ARG_WEIGHTS_UP, m_wu},
+                    {DNNL_ARG_WEIGHTS_DOWN, m_wd},
+                    {DNNL_ARG_DST, m_dst_int}});
+    strm.wait();
+
+    const size_t n_elems = mb * ic;
+    std::vector<float> res_prim(n_elems), res_int(n_elems);
+    move_data(eng, strm, res_prim, m_dst_prim, false);
+    move_data(eng, strm, res_int, m_dst_int, false);
+
+    int n_mismatches = 0;
+    float max_diff = 0.0f, max_val = 0.f, max_gold = 0.f;
+    for (size_t i = 0; i < n_elems; i++) {
+        float abs_diff = std::abs(res_int[i] - res_prim[i]);
+        float rel_diff = (res_prim[i] != 0) ? abs_diff / std::abs(res_prim[i]) : abs_diff;
+        if (abs_diff > 1e-4 && rel_diff > 5e-2) {
+            if (n_mismatches < 10)
+                printf("fp16 mismatch @ %zu: internal=%f prim=%f\n", i,
+                        res_int[i], res_prim[i]);
+            if (abs_diff > max_diff) {
+                max_diff = abs_diff;
+                max_val = res_int[i];
+                max_gold = res_prim[i];
+            }
+            n_mismatches++;
+        }
+    }
+    int threshold = int(n_elems) * 0.0006;
+    printf("fp16 total mismatches: %d / %zu (threshold: %d), max_diff: %f (%f vs %f)\n",
+            n_mismatches, n_elems, threshold, max_diff, max_val, max_gold);
+    ASSERT_LE(n_mismatches, threshold);
+}
 
 } // namespace impl
 } // namespace dnnl
