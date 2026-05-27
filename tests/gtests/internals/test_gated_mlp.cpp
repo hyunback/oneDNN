@@ -1279,6 +1279,13 @@ INSTANTIATE_TEST_SUITE_P(VEC, mlp_test_t, ::testing::Values(
             mdt::f16, mdt::f16,
             mdt::u4, mdt::f16, mdt::u8,
             mdt::u4, mdt::f16, mdt::u8}
+    ,
+    // Test case: Qwen 2.5 7B INT4 (pure u4, group_size=128)
+    mlp_dims_t{1024, 3584, 18944, 128, 128,
+            quantize_type::per_token_with_groups, dnnl_eltwise_swish,
+            mdt::f16, mdt::f16,
+            mdt::u4, mdt::f16, mdt::u8,
+            mdt::u4, mdt::f16, mdt::u8}
 /*
     , // ^-- 37
     mlp_dims_t{1024, 896, 4864, 128, 128,
@@ -1806,6 +1813,194 @@ TEST(mlp_dump_test, compare_from_dump_fp16) {
     }
     int threshold = int(n_elems) * 0.0006;
     printf("fp16 total mismatches: %d / %zu (threshold: %d), max_diff: %f (%f vs %f)\n",
+            n_mismatches, n_elems, threshold, max_diff, max_val, max_gold);
+    ASSERT_LE(n_mismatches, threshold);
+}
+
+TEST(mlp_dump_test, compare_from_dump_qwen_int4) {
+    const char *dump_dir_env = std::getenv("GMLP_DUMP_DIR");
+    if (!dump_dir_env) GTEST_SKIP() << "Set GMLP_DUMP_DIR=/tmp/gmlp_dump";
+    std::string dir(dump_dir_env);
+
+    SKIP_IF(engine::get_count(engine::kind::gpu) == 0, "Requires GPU");
+    const char *dev_env = std::getenv("GMLP_GPU_DEV");
+    int dev_idx = dev_env ? std::atoi(dev_env) : 0;
+    engine eng(engine::kind::gpu, dev_idx);
+    stream strm(eng);
+
+    // Qwen 2.5 7B INT4 layer 0 dimensions (all u4, group_size=128)
+    const memory::dim mb = 1024, ic = 3584, oc = 18944;
+    const int gs = 128;
+    const int gate_ngroups = ic / gs;   // 3584/128 = 28
+    const int down_ngroups = oc / gs;   // 18944/128 = 148
+
+    // --- Memory descriptors ---
+    auto src_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+    auto dst_md = memory::desc({mb, ic}, mdt::f16, tag::ab);
+
+    // All weights are u4, logical [IC, OC] with ba tag = physical [OC, IC]
+    auto wg_md = memory::desc({ic, oc}, mdt::u4, tag::ba);
+    auto wu_md = memory::desc({ic, oc}, mdt::u4, tag::ba);
+    auto wd_md = memory::desc({oc, ic}, mdt::u4, tag::ba);
+
+    // Scales: all grouped [ngroups, OC]
+    auto sg_md = memory::desc({gate_ngroups, oc}, mdt::f16, tag::ab);  // [28, 18944]
+    auto su_md = memory::desc({gate_ngroups, oc}, mdt::f16, tag::ab);  // [28, 18944]
+    auto sd_md = memory::desc({down_ngroups, ic}, mdt::f16, tag::ab);  // [148, 3584]
+
+    // Zero points: all grouped
+    auto zg_md = memory::desc({gate_ngroups, oc}, mdt::u8, tag::ab);
+    auto zu_md = memory::desc({gate_ngroups, oc}, mdt::u8, tag::ab);
+    auto zd_md = memory::desc({down_ngroups, ic}, mdt::u8, tag::ab);
+
+    // Intermediate buffers
+    auto fc_gate_md = memory::desc({mb, oc}, mdt::f16, tag::ab);
+    auto fc_up_md = memory::desc({mb, oc}, mdt::f32, tag::ab);
+
+    // --- Create memories ---
+    memory m_src(src_md, eng), m_dst_prim(dst_md, eng), m_dst_int(dst_md, eng);
+    memory m_wg(wg_md, eng), m_wu(wu_md, eng), m_wd(wd_md, eng);
+    memory m_sg(sg_md, eng), m_su(su_md, eng), m_sd(sd_md, eng);
+    memory m_zg(zg_md, eng), m_zu(zu_md, eng), m_zd(zd_md, eng);
+    memory m_fc_gate(fc_gate_md, eng), m_fc_up(fc_up_md, eng);
+
+    // --- Load from dump files ---
+    ASSERT_TRUE(load_binary_to_memory(dir + "/src.bin", m_src));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_gate.bin", m_wg));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_up.bin", m_wu));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/w_down.bin", m_wd));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/scale_gate.bin", m_sg));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/scale_up.bin", m_su));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/scale_down.bin", m_sd));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/zp_gate.bin", m_zg));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/zp_up.bin", m_zu));
+    ASSERT_TRUE(load_binary_to_memory(dir + "/zp_down.bin", m_zd));
+
+    fprintf(stderr, "All Qwen dump files loaded from %s\n", dir.c_str());
+
+    // ========== Primitive reference path (3 separate matmuls) ==========
+    const bool skip_ref = std::getenv("GMLP_SKIP_REF") != nullptr;
+    if (!skip_ref) {
+    fprintf(stderr, "[PROGRESS] Creating Qwen reference path...\n");
+
+    // Up matmul: src[mb,ic] × w_up[ic,oc] → fc_up[mb,oc] (f32), grouped
+    primitive_attr up_attr;
+    up_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    up_attr.set_scales(DNNL_ARG_WEIGHTS, 3, {gs, 1}, mdt::f16);
+    up_attr.set_zero_points(DNNL_ARG_WEIGHTS, 3, {gs, 1}, mdt::u8);
+    auto up_pd = matmul::primitive_desc(eng, src_md, wu_md, fc_up_md, up_attr);
+    auto up_prim = matmul(up_pd);
+
+    // Gate matmul: src[mb,ic] × w_gate[ic,oc] → fc_gate[mb,oc] (f16) + swish + mul(fc_up)
+    primitive_attr gate_attr;
+    gate_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    gate_attr.set_scales(DNNL_ARG_WEIGHTS, 3, {gs, 1}, mdt::f16);
+    gate_attr.set_zero_points(DNNL_ARG_WEIGHTS, 3, {gs, 1}, mdt::u8);
+    post_ops gate_po;
+    gate_po.append_eltwise(algorithm::eltwise_swish, 1.f, 1.f);
+    gate_po.append_binary(algorithm::binary_mul, fc_up_md);
+    gate_attr.set_post_ops(gate_po);
+    auto gate_pd = matmul::primitive_desc(eng, src_md, wg_md, fc_gate_md, gate_attr);
+    auto gate_prim = matmul(gate_pd);
+
+    // Down matmul: fc_gate[mb,oc] × w_down[oc,ic] → dst[mb,ic] (f16)
+    primitive_attr down_attr;
+    down_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    down_attr.set_scales(DNNL_ARG_WEIGHTS, 3, {gs, 1}, mdt::f16);
+    down_attr.set_zero_points(DNNL_ARG_WEIGHTS, 3, {gs, 1}, mdt::u8);
+    auto down_pd = matmul::primitive_desc(eng, fc_gate_md, wd_md, dst_md, down_attr);
+    auto down_prim = matmul(down_pd);
+
+    fprintf(stderr, "[PROGRESS] Executing Qwen reference path...\n");
+    up_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS, m_wu},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, m_su},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, m_zu},
+                    {DNNL_ARG_DST, m_fc_up}});
+    gate_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS, m_wg},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, m_sg},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, m_zg},
+                    {DNNL_ARG_DST, m_fc_gate},
+                    {DNNL_ARG_ATTR_MULTIPLE_POST_OP(1) | DNNL_ARG_SRC_1,
+                            m_fc_up}});
+    down_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_fc_gate}, {DNNL_ARG_WEIGHTS, m_wd},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, m_sd},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, m_zd},
+                    {DNNL_ARG_DST, m_dst_prim}});
+    strm.wait();
+    fprintf(stderr, "[PROGRESS] Qwen reference path done.\n");
+    }
+
+    // ========== Internal gated_mlp path ==========
+    fprintf(stderr, "[PROGRESS] Creating Qwen gated_mlp primitive...\n");
+    primitive_attr gmlp_attr;
+    gmlp_attr.set_fpmath_mode(
+            static_cast<enum fpmath_mode>(fpmath_mode::any), true);
+    gmlp_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    // All three are grouped with gs=128
+    gmlp_attr.set_scales(DNNL_ARG_WEIGHTS_GATE, 3, {gs, 1}, mdt::f16);
+    gmlp_attr.set_zero_points(DNNL_ARG_WEIGHTS_GATE, 3, {gs, 1}, mdt::u8);
+    gmlp_attr.set_scales(DNNL_ARG_WEIGHTS_UP, 3, {gs, 1}, mdt::f16);
+    gmlp_attr.set_zero_points(DNNL_ARG_WEIGHTS_UP, 3, {gs, 1}, mdt::u8);
+    gmlp_attr.set_scales(DNNL_ARG_WEIGHTS_DOWN, 3, {gs, 1}, mdt::f16);
+    gmlp_attr.set_zero_points(DNNL_ARG_WEIGHTS_DOWN, 3, {gs, 1}, mdt::u8);
+
+    auto gmlp_pd = gmlp_t::pd_t(eng, src_md, wg_md, wu_md, wd_md, dst_md,
+            dnnl_eltwise_swish, gmlp_attr);
+    auto gmlp_prim = gmlp_t(gmlp_pd);
+
+    auto scratchpad_md = gmlp_pd.scratchpad_desc();
+    memory scratchpad_mem(scratchpad_md, eng);
+    fprintf(stderr, "[PROGRESS] Qwen gated_mlp created (scratchpad: %zu bytes). Executing...\n",
+            scratchpad_md.get_size());
+
+    gmlp_prim.execute(strm,
+            {{DNNL_ARG_SRC, m_src}, {DNNL_ARG_WEIGHTS_GATE, m_wg},
+                    {DNNL_ARG_WEIGHTS_UP, m_wu},
+                    {DNNL_ARG_WEIGHTS_DOWN, m_wd},
+                    {DNNL_ARG_DST, m_dst_int},
+                    {DNNL_ARG_SCRATCHPAD, scratchpad_mem},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_GATE, m_sg},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_GATE, m_zg},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_UP, m_su},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_UP, m_zu},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS_DOWN, m_sd},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS_DOWN,
+                            m_zd}});
+    strm.wait();
+
+    // ========== Compare results ==========
+    const size_t n_elems = mb * ic;
+    std::vector<float> res_prim(n_elems), res_int(n_elems);
+    move_data(eng, strm, res_prim, m_dst_prim, false);
+    move_data(eng, strm, res_int, m_dst_int, false);
+
+    int n_mismatches = 0;
+    float max_diff = 0.0f, max_val = 0.f, max_gold = 0.f;
+    for (size_t i = 0; i < n_elems; i++) {
+        float abs_diff = std::abs(res_int[i] - res_prim[i]);
+        float rel_diff = (res_prim[i] != 0)
+                ? abs_diff / std::abs(res_prim[i])
+                : abs_diff;
+        if (abs_diff > 1e-4 && rel_diff > 5e-2) {
+            if (n_mismatches < 10)
+                printf("qwen mismatch @ %zu: internal=%f prim=%f\n", i,
+                        res_int[i], res_prim[i]);
+            if (abs_diff > max_diff) {
+                max_diff = abs_diff;
+                max_val = res_int[i];
+                max_gold = res_prim[i];
+            }
+            n_mismatches++;
+        }
+    }
+    int threshold = int(n_elems) * 0.0006;
+    printf("Qwen total mismatches: %d / %zu (threshold: %d), max_diff: %f (%f vs %f)\n",
             n_mismatches, n_elems, threshold, max_diff, max_val, max_gold);
     ASSERT_LE(n_mismatches, threshold);
 }
