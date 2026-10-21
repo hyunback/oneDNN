@@ -81,6 +81,17 @@ status_t dnnl_ocl_interop_engine_create_from_cache_blob(engine_t **engine,
     return f.engine_create(engine, device, context, index, cb);
 }
 
+status_t dnnl_ocl_interop_engine_create_offline(
+        engine_t **engine, size_t size, const uint8_t *cache_blob) {
+    bool args_ok = !utils::any_null(engine, cache_blob) && size != 0;
+    VERROR_ENGINE(args_ok, status::invalid_arguments, VERBOSE_NULL_ARG);
+
+    xpu::ocl::engine_factory_t f(engine_kind::gpu);
+
+    const std::vector<uint8_t> cb(cache_blob, cache_blob + size);
+    return f.engine_create(engine, nullptr, nullptr, 0, cb);
+}
+
 status_t dnnl_ocl_interop_engine_get_cache_blob(
         engine_t *engine, size_t *size, uint8_t *cache_blob) {
     if (engine->kind() != engine_kind::gpu || !size)

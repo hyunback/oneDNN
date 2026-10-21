@@ -135,6 +135,21 @@ inline engine make_engine(cl_device_id device, cl_context context,
     return engine(c_engine);
 }
 
+/// Constructs a device-less engine from the given cache blob.
+///
+/// The engine makes no OpenCL calls and supports primitive descriptor creation
+/// only. See dnnl_ocl_interop_engine_create_offline().
+///
+/// @param cache_blob Cache blob from get_engine_cache_blob().
+/// @returns An engine.
+inline engine make_offline_engine(const std::vector<uint8_t> &cache_blob) {
+    dnnl_engine_t c_engine;
+    error::wrap_c_api(dnnl_ocl_interop_engine_create_offline(
+                              &c_engine, cache_blob.size(), cache_blob.data()),
+            "could not create a device-less engine from cache blob");
+    return engine(c_engine);
+}
+
 /// Constructs an engine from OpenCL device and context objects.
 ///
 /// @param device The OpenCL device that this engine will encapsulate.

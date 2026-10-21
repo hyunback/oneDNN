@@ -44,6 +44,10 @@ public:
     ~engine_impl_t() override = default;
 
     status_t init() override {
+        // Device-less engine (see dnnl_ocl_interop_engine_create_offline): everything below queries
+        // the driver, and the engine's device data comes from a cache blob instead.
+        if (!device()) return status::success;
+
         cl_int err = CL_SUCCESS;
         err = xpu::ocl::clGetDeviceInfo(device(), CL_DEVICE_PLATFORM,
                 sizeof(platform_), &platform_, nullptr);

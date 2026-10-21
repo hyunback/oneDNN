@@ -82,9 +82,18 @@ public:
         return gpu_impl_list_t::get_implementation_list(desc);
     }
 
+    // A device-less engine has no device pointer to key on, so the device data it was built from is
+    // the identity. Tagged differently so it can never alias a real device at address 0.
     gpu_utils::device_id_t device_id() const override {
+        if (is_offline())
+            return std::make_tuple(
+                    1, serialization_stream_t::from_data(offline_blob_).get_hash(), 0);
         return std::make_tuple(0, reinterpret_cast<uint64_t>(device()), 0);
     }
+
+    // True for engines created by dnnl_ocl_interop_engine_create_offline: no device, no context, and
+    // no driver calls. Primitive descriptors can be created; kernels cannot.
+    bool is_offline() const { return device() == nullptr; }
 
     status_t serialize_device(serialization_stream_t &sstream) const override;
 
@@ -116,6 +125,9 @@ protected:
 
     status_t init_device_info() override;
     status_t init_device_info(const std::vector<uint8_t> &cache_blob) override;
+
+    // Device data a device-less engine was created from; empty otherwise.
+    std::vector<uint8_t> offline_blob_;
 };
 
 } // namespace ocl

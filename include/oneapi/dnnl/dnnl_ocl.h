@@ -181,6 +181,22 @@ dnnl_status_t DNNL_API dnnl_ocl_interop_engine_create_from_cache_blob(
         dnnl_engine_t *engine, cl_device_id device, cl_context context,
         size_t size, const uint8_t *cache_blob);
 
+/// Creates a device-less engine from the given cache blob.
+///
+/// The engine makes no OpenCL calls: its device data comes entirely from the
+/// cache blob, which must have been produced by
+/// #dnnl_ocl_interop_engine_get_cache_blob() on the same oneDNN build. Such an
+/// engine supports primitive descriptor creation only; creating primitives,
+/// kernels, memory or streams on it returns #dnnl_unimplemented.
+///
+/// @param engine Output engine.
+/// @param size Size of the cache blob in bytes.
+/// @param cache_blob Cache blob of size @p size.
+/// @returns #dnnl_success on success and a status describing the error
+///     otherwise.
+dnnl_status_t DNNL_API dnnl_ocl_interop_engine_create_offline(
+        dnnl_engine_t *engine, size_t size, const uint8_t *cache_blob);
+
 /// Creates an engine associated with an OpenCL device and an OpenCL context.
 ///
 /// @param engine Output engine.

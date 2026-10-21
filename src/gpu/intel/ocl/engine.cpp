@@ -72,6 +72,11 @@ status_t engine_t::init() {
 }
 
 status_t engine_t::init(const std::vector<uint8_t> &cache_blob) {
+    // Must be set before intel::engine_t::init(), which keys the device info cache on device_id().
+    if (is_offline()) {
+        if (cache_blob.empty()) return status::invalid_arguments;
+        offline_blob_ = cache_blob;
+    }
     CHECK(init_impl());
     CHECK(intel::engine_t::init(cache_blob));
     return status::success;
@@ -79,6 +84,8 @@ status_t engine_t::init(const std::vector<uint8_t> &cache_blob) {
 
 status_t engine_t::create_stream(
         impl::stream_t **stream, impl::stream_impl_t *stream_impl) {
+    VERROR_ENGINE(!is_offline(), status::unimplemented,
+            "streams are not available on a device-less engine");
     return stream_t::create_stream(stream, this, stream_impl);
 }
 
@@ -329,6 +336,9 @@ status_t engine_t::build_program_from_source(
 status_t engine_t::create_kernel_from_binary(compute::kernel_t &kernel,
         const xpu::binary_t &binary, const char *kernel_name,
         const compute::program_src_t &src) const {
+    // Kernels need a driver; a device-less engine only serves primitive descriptor creation.
+    VERROR_ENGINE(!is_offline(), status::unimplemented,
+            "kernel creation is not available on a device-less engine");
     xpu::ocl::wrapper_t<cl_program> program;
     CHECK(xpu::ocl::create_program(
             program, this->device(), this->context(), binary));
@@ -345,18 +355,27 @@ status_t engine_t::create_kernel_from_binary(compute::kernel_t &kernel,
 status_t engine_t::create_kernels_from_cache_blob(
         const cache_blob_t &cache_blob, std::vector<compute::kernel_t> &kernels,
         const std::vector<const char *> &kernel_names) const {
+    // Kernels need a driver; a device-less engine only serves primitive descriptor creation.
+    VERROR_ENGINE(!is_offline(), status::unimplemented,
+            "kernel creation is not available on a device-less engine");
     return create_ocl_kernel_from_cache_blob(
             this, cache_blob, kernel_names, &kernels);
 }
 
 status_t engine_t::create_kernel(
         compute::kernel_t *kernel, jit::generator_base_t *jitter) const {
+    // Kernels need a driver; a device-less engine only serves primitive descriptor creation.
+    VERROR_ENGINE(!is_offline(), status::unimplemented,
+            "kernel creation is not available on a device-less engine");
     if (!jitter) return status::invalid_arguments;
     return jitter->get_kernel(*kernel, this);
 }
 
 status_t engine_t::create_kernel(compute::kernel_t &kernel,
         const gemmstone::dsl::kernel_t &kernel_dsl) const {
+    // Kernels need a driver; a device-less engine only serves primitive descriptor creation.
+    VERROR_ENGINE(!is_offline(), status::unimplemented,
+            "kernel creation is not available on a device-less engine");
     // See `INCLUDE_EXTRA_DIRS_FOR_SYCL` comment.
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
     return kernel_t::make(kernel,
@@ -410,6 +429,9 @@ status_t engine_t::create_program(xpu::ocl::wrapper_t<cl_program> &program,
 status_t engine_t::create_kernels(std::vector<compute::kernel_t> *kernels,
         const std::vector<const char *> &kernel_names,
         const compute::kernel_ctx_t &kernel_ctx) const {
+    // Kernels need a driver; a device-less engine only serves primitive descriptor creation.
+    VERROR_ENGINE(!is_offline(), status::unimplemented,
+            "kernel creation is not available on a device-less engine");
     maybe_print_build_info(kernel_names, kernel_ctx);
 
     *kernels = std::vector<compute::kernel_t>(kernel_names.size());
@@ -448,15 +470,22 @@ status_t engine_t::init_device_info(const std::vector<uint8_t> &cache_blob) {
 }
 
 status_t engine_t::serialize_device(serialization_stream_t &sstream) const {
-    size_t platform_name_len;
-    cl_int err = xpu::ocl::clGetPlatformInfo(impl()->platform(),
-            CL_PLATFORM_NAME, 0, nullptr, &platform_name_len);
-    OCL_CHECK(err);
+    std::vector<char> platform_name;
+    // A device-less engine has no platform to query; the device data it was built from identifies it
+    // at least as precisely as the platform name does.
+    if (is_offline()) {
+        platform_name.assign(offline_blob_.begin(), offline_blob_.end());
+    } else {
+        size_t platform_name_len;
+        cl_int err = xpu::ocl::clGetPlatformInfo(impl()->platform(),
+                CL_PLATFORM_NAME, 0, nullptr, &platform_name_len);
+        OCL_CHECK(err);
 
-    std::vector<char> platform_name(platform_name_len);
-    err = xpu::ocl::clGetPlatformInfo(impl()->platform(), CL_PLATFORM_NAME,
-            platform_name.size(), platform_name.data(), nullptr);
-    OCL_CHECK(err);
+        platform_name.resize(platform_name_len);
+        err = xpu::ocl::clGetPlatformInfo(impl()->platform(), CL_PLATFORM_NAME,
+                platform_name.size(), platform_name.data(), nullptr);
+        OCL_CHECK(err);
+    }
 
     sstream.append_array(platform_name.size(), platform_name.data());
     sstream.append_array(
