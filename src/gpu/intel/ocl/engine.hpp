@@ -108,7 +108,8 @@ public:
     status_t create_program(xpu::ocl::wrapper_t<cl_program> &program,
             compute::program_src_t &src,
             const std::vector<const char *> &kernel_names,
-            const compute::kernel_ctx_t &kernel_ctx) const;
+            const compute::kernel_ctx_t &kernel_ctx,
+            xpu::binary_t *offline_binary = nullptr) const;
 
     DECLARE_COMMON_OCL_ENGINE_FUNCTIONS();
 
@@ -119,7 +120,8 @@ protected:
 
     status_t build_program_from_source(xpu::ocl::wrapper_t<cl_program> &program,
             compute::program_src_t &src, const char *code_string,
-            const compute::kernel_ctx_t &kernel_ctx) const;
+            const compute::kernel_ctx_t &kernel_ctx,
+            xpu::binary_t *offline_binary = nullptr) const;
 
     ~engine_t() override = default;
 

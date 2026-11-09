@@ -91,6 +91,65 @@ status_t engine_t::create_stream(
 
 namespace {
 
+// Device-less counterpart of clBuildProgram: compiles OpenCL C with ocloc for the given IP version.
+status_t ocloc_build(xpu::binary_t &binary, const std::string &source,
+        const std::string &options, uint32_t ip_version) {
+#if defined(_WIN32)
+    const char *lib = "ocloc64.dll";
+#else
+    const char *lib = "libocloc.so";
+#endif
+    using invoke_fn = int (*)(uint32_t, const char **, uint32_t,
+            const uint8_t **, const uint64_t *, const char **, uint32_t,
+            const uint8_t **, const uint64_t *, const char **, uint32_t *,
+            uint8_t ***, uint64_t **, char ***);
+    using free_fn = int (*)(uint32_t *, uint8_t ***, uint64_t **, char ***);
+    static auto invoke = reinterpret_cast<invoke_fn>(
+            xpu::find_symbol(lib, "oclocInvoke"));
+    static auto free_output = reinterpret_cast<free_fn>(
+            xpu::find_symbol(lib, "oclocFreeOutput"));
+    VERROR_ENGINE(invoke && free_output, status::runtime_error,
+            "ocloc is not available");
+
+    uint32_t major = ip_version >> 22, minor = (ip_version >> 14) & 0xff;
+    std::string device = std::to_string(major) + "." + std::to_string(minor)
+            + "." + std::to_string(ip_version & 0x3f);
+    std::vector<const char *> argv
+            = {"ocloc", "compile", "-device", device.c_str(), "-exclude_ir"};
+    // TEMP: ocloc defaults DG2 (12.55-12.57) to bindless, but its runtime expects bindful.
+    if (major == 12 && minor >= 55 && minor <= 57)
+        argv.insert(argv.end(), {"-stateful_address_mode", "bindful"});
+    argv.insert(argv.end(),
+            {"-options", options.c_str(), "-file", "kernel.cl"});
+
+    // ocloc reads the in-memory source as a C string, so pass the terminator too.
+    const uint8_t *src_data[]
+            = {reinterpret_cast<const uint8_t *>(source.c_str())};
+    const uint64_t src_len[] = {source.size() + 1};
+    const char *src_name[] = {"kernel.cl"};
+    uint32_t n = 0;
+    uint8_t **data = nullptr;
+    uint64_t *len = nullptr;
+    char **names = nullptr;
+    int rc = invoke((uint32_t)argv.size(), argv.data(), 1, src_data, src_len,
+            src_name, 0, nullptr, nullptr, nullptr, &n, &data, &len, &names);
+
+    binary.clear();
+    for (uint32_t i = 0; i < n; i++) {
+        std::string name = names[i];
+        if (rc == 0 && name.size() > 4
+                && name.compare(name.size() - 4, 4, ".bin") == 0)
+            binary.assign(data[i], data[i] + len[i]);
+        if (rc != 0 && name == "stdout.log")
+            gpu_warning() << "ocloc build log:\n"
+                          << std::string((const char *)data[i], len[i]);
+    }
+    free_output(&n, &data, &len, &names);
+    VERROR_ENGINE(rc == 0 && !binary.empty(), status::runtime_error,
+            "ocloc build failed for device %s", device.c_str());
+    return status::success;
+}
+
 status_t create_ocl_kernel_from_cache_blob(const engine_t *ocl_engine,
         const cache_blob_t &cache_blob,
         const std::vector<const char *> &kernel_names,
@@ -278,8 +337,8 @@ inline status_t fuse_microkernels(cl_context context, cl_device_id device,
 
 status_t engine_t::build_program_from_source(
         xpu::ocl::wrapper_t<cl_program> &program, compute::program_src_t &src,
-        const char *code_string,
-        const compute::kernel_ctx_t &kernel_ctx) const {
+        const char *code_string, const compute::kernel_ctx_t &kernel_ctx,
+        xpu::binary_t *offline_binary) const {
     std::string options = kernel_ctx.options();
 
     // XXX: Update options by adding macros for OpenCL extensions that are not
@@ -315,6 +374,13 @@ status_t engine_t::build_program_from_source(
 
     compute::debugdump_processed_source(
             pp_code_str, options, dev_info->get_cl_ext_options());
+
+    if (is_offline()) {
+        // Microkernel fusion patches the program through the driver.
+        if (kernel_ctx.has_custom_headers()) return status::unimplemented;
+        return ocloc_build(
+                *offline_binary, pp_code_str, options, dev_info->ip_version());
+    }
 
     auto ctx = context();
     program = xpu::ocl::make_wrapper(xpu::ocl::clCreateProgramWithSource(
@@ -389,7 +455,8 @@ status_t engine_t::create_kernel(compute::kernel_t &kernel,
 status_t engine_t::create_program(xpu::ocl::wrapper_t<cl_program> &program,
         compute::program_src_t &src,
         const std::vector<const char *> &kernel_names,
-        const compute::kernel_ctx_t &kernel_ctx) const {
+        const compute::kernel_ctx_t &kernel_ctx,
+        xpu::binary_t *offline_binary) const {
 
     const char *source = nullptr;
     for (size_t i = 0; source == nullptr && i < kernel_names.size(); i++)
@@ -421,21 +488,30 @@ status_t engine_t::create_program(xpu::ocl::wrapper_t<cl_program> &program,
             "kernels in a single .cl source file or split creation in groups "
             "based on their .cl source file.";
 
-    return build_program_from_source(program, src, source, kernel_ctx);
+    return build_program_from_source(
+            program, src, source, kernel_ctx, offline_binary);
 }
 
 status_t engine_t::create_kernels(std::vector<compute::kernel_t> *kernels,
         const std::vector<const char *> &kernel_names,
         const compute::kernel_ctx_t &kernel_ctx) const {
-    // Kernels need a driver; a device-less engine only serves primitive descriptor creation.
-    VERROR_ENGINE(!is_offline(), status::unimplemented,
-            "kernel creation is not available on a device-less engine");
     maybe_print_build_info(kernel_names, kernel_ctx);
 
     *kernels = std::vector<compute::kernel_t>(kernel_names.size());
 
     xpu::ocl::wrapper_t<cl_program> program;
     compute::program_src_t src;
+    if (is_offline()) {
+        // All kernels share the program binary, as get_binary() returns online.
+        xpu::binary_t binary;
+        CHECK(create_program(program, src, kernel_names, kernel_ctx, &binary));
+        for (size_t i = 0; i < kernel_names.size(); ++i)
+            if (kernel_names[i])
+                (*kernels)[i] = compute::kernel_t(
+                        std::make_shared<offline_kernel_t>(
+                                kernel_names[i], binary));
+        return status::success;
+    }
     CHECK(create_program(program, src, kernel_names, kernel_ctx));
     return create_kernels_from_program(kernels, kernel_names, program, src);
 }
