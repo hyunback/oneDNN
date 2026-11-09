@@ -77,6 +77,13 @@ private:
     size_t size_;
 };
 
+// Set on the calling thread while creating primitive descriptors whose primitives come from cache
+// blobs, so implementations can skip work that only validates kernel generation.
+inline bool &pd_for_cache_blob() {
+    static thread_local bool value = false;
+    return value;
+}
+
 struct cache_blob_t {
     cache_blob_t() = default;
     cache_blob_t(uint8_t *data, size_t size)

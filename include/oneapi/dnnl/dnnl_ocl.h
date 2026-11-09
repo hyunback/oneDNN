@@ -197,6 +197,15 @@ dnnl_status_t DNNL_API dnnl_ocl_interop_engine_create_from_cache_blob(
 dnnl_status_t DNNL_API dnnl_ocl_interop_engine_create_offline(
         dnnl_engine_t *engine, size_t size, const uint8_t *cache_blob);
 
+/// Marks primitive descriptors created on the calling thread as being used
+/// with cache blobs (#dnnl_primitive_create_from_cache_blob()). Kernel
+/// generation checks are skipped; a primitive whose cache blob was produced
+/// for a different kernel fails to create.
+///
+/// @param enable Non-zero to enable, zero to disable.
+/// @returns #dnnl_success.
+dnnl_status_t DNNL_API dnnl_ocl_interop_set_cache_blob_pd_hint(int enable);
+
 /// Creates an engine associated with an OpenCL device and an OpenCL context.
 ///
 /// @param engine Output engine.

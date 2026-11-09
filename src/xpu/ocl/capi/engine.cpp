@@ -19,6 +19,7 @@
 #include "oneapi/dnnl/dnnl_ocl.h"
 
 #include "common/c_types_map.hpp"
+#include "common/cache_blob.hpp"
 #include "common/engine.hpp"
 
 #include "xpu/ocl/engine_factory.hpp"
@@ -90,6 +91,11 @@ status_t dnnl_ocl_interop_engine_create_offline(
 
     const std::vector<uint8_t> cb(cache_blob, cache_blob + size);
     return f.engine_create(engine, nullptr, nullptr, 0, cb);
+}
+
+status_t dnnl_ocl_interop_set_cache_blob_pd_hint(int enable) {
+    pd_for_cache_blob() = enable != 0;
+    return status::success;
 }
 
 status_t dnnl_ocl_interop_engine_get_cache_blob(

@@ -362,6 +362,11 @@ struct gen_t : public primitive_t {
                                     << ",Non deterministic kernel.";
                 }
 
+                // The primitive comes from a cache blob: its kernel was generated already.
+                if (valid && pd_for_cache_blob()) {
+                    kernel_success = true;
+                    break;
+                }
                 if (valid) {
                     auto try_create = [&]() {
                         std::vector<compute::kernel_t> kernel_(1);
@@ -617,6 +622,17 @@ struct gen_t : public primitive_t {
     status_t init_nocopy(impl::engine_t *engine) {
         using namespace data_type;
         auto kd = pd()->kernel_desc();
+
+        // Versioning ties a cache blob to the kernel desc it was generated for.
+        auto version = (int32_t)kd->serialize().get_hash();
+        if (cache_blob()) {
+            int32_t blob_version;
+            CHECK(cache_blob().get_value(
+                    (uint8_t *)&blob_version, sizeof(blob_version)));
+            VERROR_ENGINE(blob_version == version, status::runtime_error,
+                    "cache blob was generated for a different gemm kernel");
+        }
+        set_version(version);
 
         CHECK(create_kernel(engine, nocopy_kernel_, "gemm_kernel", *kd));
 
