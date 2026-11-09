@@ -131,6 +131,12 @@ public:
 #endif
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
         auto *ocl_engine = utils::downcast<const ocl::engine_t *>(engine);
+        // No device to load the kernel on: nGEN emits the zebin on the host.
+        if (ocl_engine->is_offline()) {
+            kernel = compute::kernel_t(std::make_shared<ocl::offline_kernel_t>(
+                    kernel_name(), ngen::ELFCodeGenerator<hw>::getBinary()));
+            return status::success;
+        }
         auto ocl_kernel = ngen_code_generator_t<hw>::getKernel(
                 ocl_engine->context(), ocl_engine->device());
         return ocl::kernel_t::make(kernel, ocl_kernel, {});

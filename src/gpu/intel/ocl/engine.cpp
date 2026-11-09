@@ -364,9 +364,7 @@ status_t engine_t::create_kernels_from_cache_blob(
 
 status_t engine_t::create_kernel(
         compute::kernel_t *kernel, jit::generator_base_t *jitter) const {
-    // Kernels need a driver; a device-less engine only serves primitive descriptor creation.
-    VERROR_ENGINE(!is_offline(), status::unimplemented,
-            "kernel creation is not available on a device-less engine");
+    // On a device-less engine nGEN generators return a binary-only kernel.
     if (!jitter) return status::invalid_arguments;
     return jitter->get_kernel(*kernel, this);
 }

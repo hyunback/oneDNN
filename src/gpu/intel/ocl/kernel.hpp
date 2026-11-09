@@ -91,6 +91,39 @@ private:
     bool save_events_;
 };
 
+// Kernel binary generated on a device-less engine: it can only be serialized into a cache blob.
+class offline_kernel_t : public compute::kernel_impl_t {
+public:
+    offline_kernel_t(std::string name, xpu::binary_t binary)
+        : name_(std::move(name)), binary_(std::move(binary)) {}
+
+    status_t get_binary(const impl::engine_t *engine,
+            xpu::binary_t &binary) const override {
+        binary = binary_;
+        return status::success;
+    }
+    status_t get_kernel_binary(xpu::binary_t &binary) const override {
+        binary = binary_;
+        return status::success;
+    }
+    status_t get_binary_size(const impl::engine_t *engine,
+            size_t *binary_size) const override {
+        *binary_size = binary_.size();
+        return status::success;
+    }
+
+    status_t dump() const override { return status::success; }
+    std::string name() const override { return name_; }
+    status_t check_alignment(
+            const compute::kernel_arg_list_t &arg_list) const override {
+        return status::success;
+    }
+
+private:
+    std::string name_;
+    xpu::binary_t binary_;
+};
+
 } // namespace ocl
 } // namespace intel
 } // namespace gpu
